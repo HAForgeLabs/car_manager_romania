@@ -197,7 +197,7 @@ După expirarea perioadei de test, integrarea rămâne funcțională, dar trece 
 
 În modul gratuit, integrarea poate fi folosită în continuare pentru **un singur autovehicul**, cu funcționalitățile de bază necesare pentru administrarea acestuia. Funcționalitățile avansate, suportul complet pentru mai multe autovehicule și modulele extinse necesită o licență activă.
 
-Licența se poate obține printr-o donație minimă pe **Buy Me a Coffee**. Această donație ajută la susținerea dezvoltării proiectului, mentenanței, testării și îmbunătățirilor viitoare.
+Licența se poate obține printr-o donație minimă pe **Buy Me a Coffee**: https://buymeacoffee.com/HaForgeLAbs . Această donație ajută la susținerea dezvoltării proiectului, mentenanței, testării și îmbunătățirilor viitoare.
 
 Licența poate fi introdusă și verificată direct din cardul Lovelace, folosind secțiunea dedicată de licențiere.
 

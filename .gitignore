@@ -54,3 +54,4 @@ Thumbs.db
 # =========================
 .env
 .env.*
+custom_components/car_manager_romania.zip

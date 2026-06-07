@@ -1,0 +1,56 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Car Manager Romania",
+        "data": {
+          "name": "Integration name"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Car Manager Romania is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Car Manager Romania",
+        "menu_options": {
+          "add_vehicle": "Add vehicle",
+          "rovinieta": "Configure e-rovinieta.ro account",
+          "notifications": "Configure notifications"
+        }
+      },
+      "add_vehicle": {
+        "title": "Add vehicle",
+        "data": {
+          "name": "Name",
+          "license_plate": "License plate",
+          "vin": "VIN",
+          "km": "Kilometers"
+        }
+      },
+      "rovinieta": {
+        "title": "e-rovinieta.ro account",
+        "description": "{password_note}",
+        "data": {
+          "rovinieta_username": "e-rovinieta.ro username",
+          "rovinieta_password": "e-rovinieta.ro password",
+          "rovinieta_scan_interval": "Rovinieta update interval, in seconds"
+        }
+      },
+      "notifications": {
+        "title": "Car Manager Romania notifications",
+        "data": {
+          "notifications_enabled": "Enable notifications",
+          "notify_maintenance": "Maintenance notifications",
+          "notify_legal": "RCA / ITP / rovinieta / CASCO notifications",
+          "notify_equipment": "Vehicle equipment notifications",
+          "notify_battery": "Vehicle battery notifications",
+          "notify_expenses": "Estimated expenses notifications"
+        }
+      }
+    }
+  }
+}

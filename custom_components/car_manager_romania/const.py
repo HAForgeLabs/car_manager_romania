@@ -5,11 +5,11 @@ from __future__ import annotations
 DOMAIN = "car_manager_romania"
 
 DEFAULT_NAME = "Car Manager România"
-VERSION = "1.0.70"
+VERSION = "1.0.71"
 
 PLATFORMS: list[str] = ["sensor", "number", "date", "text", "button"]
 
-ATTR_INTEGRATION_VERSION = "1.0.70"
+ATTR_INTEGRATION_VERSION = "1.0.71"
 
 SIGNAL_VEHICLES_UPDATED = f"{DOMAIN}_vehicles_updated"
 SIGNAL_LICENSE_UPDATED = f"{DOMAIN}_license_updated"

@@ -199,7 +199,7 @@ class CarManagerOptionsFlow(config_entries.OptionsFlow):
                 }
             ),
             description_placeholders={
-                "password_note": "Lasă parola goală dacă nu vrei să o modifici.",
+                "password_note": self._rovinieta_password_note(),
             },
         )
 
@@ -283,6 +283,17 @@ class CarManagerOptionsFlow(config_entries.OptionsFlow):
                 }
             ),
         )
+
+
+    def _rovinieta_password_note(self) -> str:
+        """Returnează mesajul de ajutor pentru parolă, în limba interfeței Home Assistant."""
+
+        language = (getattr(self.hass.config, "language", None) or "").lower()
+
+        if language.startswith("ro"):
+            return "Lasă parola goală dacă nu vrei să o modifici."
+
+        return "Leave the password empty if you do not want to change it."
 
     @staticmethod
     def _generate_vehicle_id(

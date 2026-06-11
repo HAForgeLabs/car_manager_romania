@@ -1,5 +1,5 @@
 class CarManagerRomaniaCard extends HTMLElement {
-  static get version() { return "v1.0.71"; }
+  static get version() { return "v1.0.72b55"; }
   setConfig(config) {
     this.config = config || {};
     this._editMode = this.config.edit_mode ?? false;
@@ -71,27 +71,49 @@ class CarManagerRomaniaCard extends HTMLElement {
     this._notificationMessage = this._notificationMessage || "";
     this._activeTab = this._activeTab || this.config.default_tab || "vehicles";
     this._tabHoverLabel = this._tabHoverLabel || "";
+
+    // Controlăm randarea manual, pentru că Home Assistant trimite update-uri dese către card.
+    // Pe iOS, reconstruirea DOM-ului în timp ce utilizatorul editează un câmp poate muta pagina
+    // automat în sus sau poate bloca focusul în Home Assistant Companion.
+    this._renderPending = this._renderPending || false;
+    this._renderScheduled = this._renderScheduled || null;
+    this._lastRenderAt = this._lastRenderAt || 0;
+    this._hasRenderedOnce = this._hasRenderedOnce || false;
   }
 
   set hass(hass) {
     this._hass = hass;
 
-    // Home Assistant actualizează cardul des. Dacă utilizatorul scrie într-un input,
-    // nu randăm din nou cardul, altfel textul introdus se pierde.
-    if (this._inputEditing || this._isInputFocused()) {
-      this._renderPending = true;
+    // Prima randare trebuie făcută imediat, altfel cardul poate rămâne gol până la următorul update.
+    if (!this._hasRenderedOnce) {
+      this.render({ force: true, preserveScroll: false });
       return;
     }
 
-    this.render();
+    // Update-urile HA sunt grupate și amânate când există un câmp activ.
+    // Astfel evităm refresh-ul permanent vizibil și saltul paginii pe iOS.
+    this._scheduleRender("hass");
   }
 
   getCardSize() {
     return 5;
   }
 
-  render() {
+  render(options = {}) {
     if (!this._hass) return;
+
+    const force = options === true || options?.force === true;
+    const preserveScroll = options?.preserveScroll !== false;
+
+    if (!force && this._shouldDeferRender()) {
+      this._renderPending = true;
+      this._scheduleRender("deferred");
+      return;
+    }
+
+    this._clearScheduledRender();
+    this._renderPending = false;
+    const scrollSnapshot = preserveScroll ? this._captureScrollSnapshot() : null;
 
     const inactiveVehiclesAll = this._buildInactiveVehicles();
     this._inactiveVehicleIds = new Set(inactiveVehiclesAll.map((vehicle) => vehicle.vehicle_id).filter(Boolean));
@@ -159,6 +181,78 @@ class CarManagerRomaniaCard extends HTMLElement {
     `;
 
     this._attachEvents();
+    this._hasRenderedOnce = true;
+    this._lastRenderAt = Date.now();
+    this._restoreScrollSnapshot(scrollSnapshot);
+  }
+
+  _shouldDeferRender() {
+    return this._inputEditing || this._isInputFocused();
+  }
+
+  _scheduleRender(reason = "") {
+    this._renderPending = true;
+
+    if (this._renderScheduled) {
+      window.clearTimeout(this._renderScheduled);
+      this._renderScheduled = null;
+    }
+
+    // Dacă utilizatorul editează un câmp, nu reconstruim cardul peste inputul activ.
+    // Reprogramăm randarea până după focusout, cu o mică marjă pentru iOS WebView.
+    if (this._shouldDeferRender()) {
+      this._renderScheduled = window.setTimeout(() => {
+        this._renderScheduled = null;
+        if (this._shouldDeferRender()) {
+          this._scheduleRender("editing-active");
+          return;
+        }
+        this.render({ force: true, preserveScroll: true });
+      }, 700);
+      return;
+    }
+
+    // Grupăm update-urile venite rapid din Home Assistant ca să nu reconstruim DOM-ul la fiecare state change.
+    const elapsed = Date.now() - (this._lastRenderAt || 0);
+    const delay = reason === "hass" ? Math.max(120, 450 - elapsed) : 120;
+    this._renderScheduled = window.setTimeout(() => {
+      this._renderScheduled = null;
+      this.render({ force: true, preserveScroll: true });
+    }, delay);
+  }
+
+  _clearScheduledRender() {
+    if (!this._renderScheduled) return;
+    window.clearTimeout(this._renderScheduled);
+    this._renderScheduled = null;
+  }
+
+  _captureScrollSnapshot() {
+    const rect = this.getBoundingClientRect?.();
+    if (!rect) return null;
+
+    const scrollingElement = this.ownerDocument?.scrollingElement || document.scrollingElement || document.documentElement;
+    return {
+      top: rect.top,
+      scrollTop: scrollingElement?.scrollTop ?? window.scrollY ?? 0,
+      scrollingElement,
+    };
+  }
+
+  _restoreScrollSnapshot(snapshot) {
+    if (!snapshot?.scrollingElement || typeof snapshot.top !== "number") return;
+
+    window.requestAnimationFrame(() => {
+      const rect = this.getBoundingClientRect?.();
+      if (!rect) return;
+
+      const delta = rect.top - snapshot.top;
+      if (!Number.isFinite(delta) || Math.abs(delta) < 2) return;
+
+      // Păstrăm poziția vizuală a cardului după randare. Este important mai ales când cardul
+      // este sub alte carduri în dashboard și iOS recalculează agresiv poziția paginii.
+      snapshot.scrollingElement.scrollTop = snapshot.scrollTop + delta;
+    });
   }
 
   _buildVehicles() {
@@ -3874,8 +3968,7 @@ class CarManagerRomaniaCard extends HTMLElement {
         window.setTimeout(() => {
           this._inputEditing = this._isInputFocused();
           if (this._renderPending && !this._inputEditing) {
-            this._renderPending = false;
-            this.render();
+            this.render({ force: true, preserveScroll: true });
           }
         }, 150);
       });
@@ -4925,7 +5018,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       : summaries.filter((summary) => summary.key === this._fuelVehicleFilter);
     const payload = {
       type: "car_manager_romania_fuel_history",
-      version: "1.0.71",
+      version: "1.0.72b55",
       generated_at: new Date().toISOString(),
       filter: this._fuelVehicleFilter,
       vehicles: filtered.map((summary) => ({

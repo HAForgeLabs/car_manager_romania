@@ -117,6 +117,8 @@ from .battery_services import async_register_battery_services
 _LOGGER = logging.getLogger(__name__)
 
 LOVELACE_CARD_URL = "/car_manager_romania/car-manager-romania-card.js"
+PANEL_MODULE_URL = "/car_manager_romania/car-manager-romania-panel.js"
+PANEL_URL_PATH = "car-manager-romania"
 LOVELACE_CARD_NOTIFICATION_ID = "car_manager_romania_lovelace_card"
 
 
@@ -358,6 +360,40 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Nu am putut crea notificarea pentru cardul Lovelace: %s", err)
 
+
+
+def _async_register_dashboard_panel(hass: HomeAssistant) -> None:
+    """Înregistrează panoul dedicat Car Manager România în meniul lateral."""
+
+    hass.data.setdefault(DOMAIN, {})
+    if hass.data[DOMAIN].get("_dashboard_panel_registered"):
+        return
+
+    try:
+        from homeassistant.components.frontend import async_register_built_in_panel
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Nu am putut importa înregistrarea panoului frontend: %s", err)
+        return
+
+    try:
+        async_register_built_in_panel(
+            hass,
+            component_name="custom",
+            sidebar_title="Car Manager",
+            sidebar_icon="mdi:car-cog",
+            frontend_url_path=PANEL_URL_PATH,
+            require_admin=False,
+            config={
+                "_panel_custom": {
+                    "name": "car-manager-romania-panel",
+                    "module_url": PANEL_MODULE_URL,
+                },
+                "domain": DOMAIN,
+            },
+        )
+        hass.data[DOMAIN]["_dashboard_panel_registered"] = True
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Nu am putut înregistra panoul Car Manager România: %s", err)
 
 
 ADD_VEHICLE_SERVICE_SCHEMA = vol.Schema(
@@ -1283,6 +1319,7 @@ async def async_setup_entry(
 
     await _async_register_services(hass)
     await _async_register_frontend(hass)
+    _async_register_dashboard_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

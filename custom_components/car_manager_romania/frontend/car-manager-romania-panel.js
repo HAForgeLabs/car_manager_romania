@@ -490,7 +490,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs" style="position:absolute;right:12px;top:12px;bottom:auto;z-index:4;">
               <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.0.72b63</small></span>
+              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.0.72b64</small></span>
             </a>
           </div>
           <aside class="cmr-hero-side" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;width:100%;max-width:100%;margin-top:14px;">
@@ -516,7 +516,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._renderHeroCar()}
           <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs">
             <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.0.72b63</small></span>
+            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.0.72b64</small></span>
           </a>
         </div>
         <aside class="cmr-hero-side">
@@ -2912,7 +2912,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._settingsHeroTile("Notificări", notificationValues.notifications_enabled ? "active" : "oprite", "categorii salvate în integrare", "mdi:bell-cog-outline")}
           ${this._settingsHeroTile("Backup", backupFilename, "fișier în /config", "mdi:backup-restore")}
           ${this._settingsHeroTile("Autovehicule", vehicles.length, "profiluri active în integrare", "mdi:car-multiple")}
-          ${this._settingsHeroTile("Versiune", "1.0.72b63", "panel nou Car Manager", "mdi:package-variant-closed-check")}
+          ${this._settingsHeroTile("Versiune", "1.0.72b64", "panel nou Car Manager", "mdi:package-variant-closed-check")}
         </section>
 
         <section class="cmr-settings-grid">
@@ -2997,7 +2997,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <div class="cmr-settings-steps">
               <div><strong>1</strong><span>Restart Home Assistant după copierea fișierelor.</span></div>
-              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.0.72b63</code>.</span></div>
+              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.0.72b64</code>.</span></div>
               <div><strong>3</strong><span>Hard refresh în browser sau golire cache aplicație mobilă.</span></div>
             </div>
           </article>

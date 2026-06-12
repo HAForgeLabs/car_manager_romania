@@ -1,5 +1,5 @@
 class CarManagerRomaniaCard extends HTMLElement {
-  static get version() { return "v1.0.72b63"; }
+  static get version() { return "v1.0.72b64"; }
   setConfig(config) {
     this.config = config || {};
     this._editMode = this.config.edit_mode ?? false;
@@ -79,6 +79,7 @@ class CarManagerRomaniaCard extends HTMLElement {
     this._renderScheduled = this._renderScheduled || null;
     this._lastRenderAt = this._lastRenderAt || 0;
     this._hasRenderedOnce = this._hasRenderedOnce || false;
+    this._lastHassSignature = this._lastHassSignature || "";
   }
 
   set hass(hass) {
@@ -86,17 +87,62 @@ class CarManagerRomaniaCard extends HTMLElement {
 
     // Prima randare trebuie făcută imediat, altfel cardul poate rămâne gol până la următorul update.
     if (!this._hasRenderedOnce) {
+      this._lastHassSignature = this._buildHassSignature();
       this.render({ force: true, preserveScroll: false });
       return;
     }
 
-    // Update-urile HA sunt grupate și amânate când există un câmp activ.
-    // Astfel evităm refresh-ul permanent vizibil și saltul paginii pe iOS.
+    // Home Assistant apelează setterul hass foarte des, inclusiv pentru entități care nu țin
+    // de Car Manager România. Înainte reconstruiam cardul la fiecare astfel de apel, iar pe iOS
+    // imaginea părea că se reîncarcă permanent și pagina putea sări în sus.
+    // Randăm din nou doar dacă s-a schimbat efectiv o entitate relevantă a integrării.
+    const signature = this._buildHassSignature();
+    if (signature === this._lastHassSignature) {
+      return;
+    }
+    this._lastHassSignature = signature;
+
+    // Update-urile HA relevante sunt grupate și amânate când există un câmp activ.
+    // Astfel evităm refresh-ul vizibil și saltul paginii pe iOS.
     this._scheduleRender("hass");
   }
 
   getCardSize() {
     return 5;
+  }
+
+
+  _buildHassSignature() {
+    if (!this._hass) return "";
+
+    const states = this._hass.states || {};
+    const entities = this._hass.entities || {};
+    const relevant = [];
+
+    for (const [entityId, stateObj] of Object.entries(states)) {
+      const registry = entities[entityId] || {};
+      const attrs = stateObj?.attributes || {};
+      const isCarManagerEntity = registry.platform === "car_manager_romania"
+        || Boolean(attrs.vehicle_id || attrs.license_plate || attrs.vin || attrs.vehicle_statistics || attrs.vehicle_chart_data)
+        || this._normalize(attrs.friendly_name || entityId).includes("car manager");
+
+      if (!isCarManagerEntity) continue;
+      if (!this._isSupportedDomain(entityId)) continue;
+      if (this._isTechnicalOrExternalRovinietaEntity(entityId, stateObj)) continue;
+
+      relevant.push(`${entityId}:${stateObj?.state ?? ""}:${this._stableStringify(attrs)}`);
+    }
+
+    relevant.sort();
+    return relevant.join("|");
+  }
+
+  _stableStringify(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value !== "object") return String(value);
+    if (Array.isArray(value)) return `[${value.map((item) => this._stableStringify(item)).join(",")}]`;
+
+    return `{${Object.keys(value).sort().map((key) => `${key}:${this._stableStringify(value[key])}`).join(",")}}`;
   }
 
   render(options = {}) {

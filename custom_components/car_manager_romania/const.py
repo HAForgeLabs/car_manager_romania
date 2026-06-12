@@ -5,11 +5,11 @@ from __future__ import annotations
 DOMAIN = "car_manager_romania"
 
 DEFAULT_NAME = "Car Manager România"
-VERSION = "1.0.72b64"
+VERSION = "1.0.72b67"
 
 PLATFORMS: list[str] = ["sensor", "number", "date", "text", "button"]
 
-ATTR_INTEGRATION_VERSION = "1.0.72b64"
+ATTR_INTEGRATION_VERSION = "1.0.72b67"
 
 SIGNAL_VEHICLES_UPDATED = f"{DOMAIN}_vehicles_updated"
 SIGNAL_LICENSE_UPDATED = f"{DOMAIN}_license_updated"
@@ -50,6 +50,7 @@ SERVICE_CLEANUP_ORPHAN_ENTITIES = "cleanup_orphan_entities"
 SERVICE_REFRESH_LICENSE_STATUS = "refresh_license_status"
 
 SERVICE_SET_NOTIFICATION_OPTIONS = "set_notification_options"
+SERVICE_SET_ROVINIETA_ACCOUNT = "set_rovinieta_account"
 SERVICE_ADD_FUEL_RECEIPT = "add_fuel_receipt"
 SERVICE_UPDATE_FUEL_RECEIPT = "update_fuel_receipt"
 SERVICE_DELETE_FUEL_RECEIPT = "delete_fuel_receipt"
@@ -325,7 +326,7 @@ BATTERY_TYPES: dict[str, str] = {
     BATTERY_TYPE_OTHER: "Alt tip",
 }
 
-# Modul intern e-rovinieta.ro.
+# Modul intern pentru portalurile de rovinietă.
 CONF_ROVINIETA_USERNAME = "rovinieta_username"
 CONF_ROVINIETA_PASSWORD = "rovinieta_password"
 CONF_ROVINIETA_SCAN_INTERVAL = "rovinieta_scan_interval"
@@ -359,8 +360,9 @@ LEGAL_TYPE_ITP = "itp"
 LEGAL_TYPE_ROVINIETA = "rovinieta"
 
 # Termene legale cu perioadă de valabilitate editabilă manual.
-# Rovinieta poate fi urmărită și manual, pentru utilizatorii fără cont e-rovinieta.ro.
-# Dacă modulul e-rovinieta.ro este configurat și găsește autovehiculul, cardul preferă datele automate.
+# Rovinieta poate fi urmărită și manual, pentru utilizatorii fără cont online.
+# Dacă modulul online găsește autovehiculul în e-rovinieta.ro sau în portalul oficial
+# CNAIR erovinieta.ro, cardul preferă datele automate.
 LEGAL_TYPES: dict[str, str] = {
     LEGAL_TYPE_RCA: "RCA",
     LEGAL_TYPE_CASCO: "CASCO",
@@ -382,6 +384,7 @@ LEGAL_OPTION_IGNORED = "ignored"
 LEGAL_DATA_SOURCE = "source"
 LEGAL_SOURCE_MANUAL = "manual"
 LEGAL_SOURCE_EROVINIETA = "e-rovinieta.ro"
+LEGAL_SOURCE_CNAIR_EROVINIETA = "erovinieta.ro"
 
 LEGAL_STATUS_UNKNOWN = "neconfigurat"
 LEGAL_STATUS_VALID = "valid"

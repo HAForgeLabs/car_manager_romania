@@ -188,6 +188,7 @@ class CarRovinietaBaseSensor(SensorEntity):
 
         attrs = {
             "vehicle_id": vehicle.id,
+            "sursa_date": vehicle.source,
             "numar_inmatriculare": vehicle.plate_no,
             "serie_sasiu": vehicle.chasis_no,
             "tara": vehicle.country_name,
@@ -207,6 +208,7 @@ class CarRovinietaBaseSensor(SensorEntity):
             attrs.update(
                 {
                     "detalii_rovinieta_activa": vehicle.active_vignette,
+                    "sursa_rovinieta_activa": vehicle.active_vignette.get("source") or vehicle.source,
                     "serie_rovinieta": vehicle.active_vignette.get("oProdVignetteSerie"),
                     "perioada": vehicle.active_vignette.get("oProdPeriodName"),
                     "pret_lei": vehicle.active_vignette.get("oProdPrice"),

@@ -1,5 +1,5 @@
 class CarManagerRomaniaCard extends HTMLElement {
-  static get version() { return "v1.0.72b64"; }
+  static get version() { return "v1.0.72b67"; }
   setConfig(config) {
     this.config = config || {};
     this._editMode = this.config.edit_mode ?? false;
@@ -2350,7 +2350,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       this._renderRow("RCA expiră la", summary.rcaExpiry, summary.rcaDays, summary.rcaStatus, this._statusClass(summary.rcaStatus || summary.rcaDays)),
       this._shouldShowCascoTile(summary) ? this._renderRow("CASCO expiră la", summary.cascoExpiry, summary.cascoDays, summary.cascoStatus, this._statusClass(summary.cascoStatus || summary.cascoDays)) : "",
       this._renderRow("ITP expiră la", summary.itpExpiry, summary.itpDays, summary.itpStatus, this._statusClass(summary.itpStatus || summary.itpDays)),
-      this._renderRow("Rovinietă expiră la", summary.rovinietaExpiry, summary.rovinietaDays, summary.rovinietaStatus, this._statusClass(summary.rovinietaStatus || summary.rovinietaDays)),
+      this._renderRow("Rovinietă expiră la", summary.rovinietaExpiry, summary.rovinietaDays, summary.rovinietaSource ? `Sursă: ${summary.rovinietaSource}` : summary.rovinietaStatus, this._statusClass(summary.rovinietaStatus || summary.rovinietaDays)),
     ].filter(Boolean).join("");
 
     return `<div class="cmr-section"><div class="cmr-section-title">Termene legale</div>${rows}</div>`;
@@ -3096,7 +3096,9 @@ class CarManagerRomaniaCard extends HTMLElement {
   }
 
   _renderRovinietaDetails(vehicle) {
-    const rows = vehicle.entities
+    const source = this._findRovinietaSource(vehicle);
+    const sourceRow = source ? this._renderRow("Sursă date", this._rovinietaSourceLabel(source), "", "", "") : "";
+    const rows = sourceRow + vehicle.entities
       .filter(({ entityId, stateObj }) => entityId.startsWith("sensor.") && this._friendly({ stateObj, entityId }).toLowerCase().includes("roviniet"))
       .filter(({ stateObj }) => stateObj.state && stateObj.state !== "unknown" && stateObj.state !== "unavailable")
       .map((entity) => this._renderRow(this._shortLabel(this._friendly(entity)), entity.stateObj.state, "", "", this._statusClass(entity.stateObj.state)))
@@ -5064,7 +5066,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       : summaries.filter((summary) => summary.key === this._fuelVehicleFilter);
     const payload = {
       type: "car_manager_romania_fuel_history",
-      version: "1.0.72b63",
+      version: "1.0.72b67",
       generated_at: new Date().toISOString(),
       filter: this._fuelVehicleFilter,
       vehicles: filtered.map((summary) => ({
@@ -5532,6 +5534,7 @@ class CarManagerRomaniaCard extends HTMLElement {
     const rovStatus = this._findRovinietaStatus(vehicle);
     const rovDays = this._findRovinietaDays(vehicle);
     const rovExpiry = this._findRovinietaExpiry(vehicle);
+    const rovSource = this._findRovinietaSource(vehicle);
 
     return {
       km: this._entityValue(km),
@@ -5550,6 +5553,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       rovinietaStatus: this._entityValue(rovStatus),
       rovinietaDays: this._formatDays(this._entityValue(rovDays)),
       rovinietaExpiry: this._formatDateForDisplay(this._entityValue(rovExpiry)),
+      rovinietaSource: this._rovinietaSourceLabel(rovSource),
     };
   }
 
@@ -5558,6 +5562,43 @@ class CarManagerRomaniaCard extends HTMLElement {
     const found = this._findByName(vehicle, terms, excludeTerms, (entity) => entity.entityId.startsWith("sensor."));
     if (found) return found;
     return this._findByName(vehicle, terms, excludeTerms);
+  }
+
+  _findRovinietaSource(vehicle) {
+    const attrs = this._vehicleStatusAttributes(vehicle) || {};
+    const legalTerms = attrs.legal_terms || {};
+    const rovinietaTerm = legalTerms.rovinieta || {};
+
+    const directSource = this._pickFirstValue([
+      attrs.rovinieta_data_source, attrs.rovinieta_source, attrs.sursa_rovinieta,
+      attrs.sursa_rovinieta_activa, attrs.sursa_date, attrs.data_source,
+      rovinietaTerm.data_source, rovinietaTerm.source, rovinietaTerm.sursa,
+    ]);
+    if (directSource) return directSource;
+
+    const entity = this._findByName(vehicle, ["roviniet"], [], (item) => item.entityId.startsWith("sensor."));
+    const entityAttrs = entity?.stateObj?.attributes || {};
+    return this._pickFirstValue([
+      entityAttrs.sursa_rovinieta_activa, entityAttrs.sursa_date, entityAttrs.rovinieta_source,
+      entityAttrs.data_source, entityAttrs.source,
+    ]);
+  }
+
+  _rovinietaSourceLabel(source) {
+    const raw = String(source || "").trim();
+    const value = this._normalize(raw);
+    if (!value) return "";
+    if (value.includes("cnair") || (value.includes("erovinieta.ro") && !value.includes("e-rovinieta"))) return "CNAIR / erovinieta.ro";
+    if (value.includes("e-rovinieta")) return "e-rovinieta.ro";
+    if (value.includes("manual")) return "manual";
+    return raw;
+  }
+
+  _pickFirstValue(values) {
+    for (const value of values) {
+      if (value !== undefined && value !== null && value !== "" && value !== "unknown" && value !== "unavailable") return value;
+    }
+    return "";
   }
 
   _findRovinietaStatus(vehicle) {

@@ -49,6 +49,7 @@ from .const import (
     CONF_VIN,
     COST_AMOUNT,
     DEFAULT_ROVINIETA_SCAN_INTERVAL,
+    MIN_ROVINIETA_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
     SERVICE_ADD_VEHICLE,
@@ -67,6 +68,7 @@ from .const import (
     SERVICE_CLEANUP_ORPHAN_ENTITIES,
     SERVICE_REFRESH_LICENSE_STATUS,
     SERVICE_SET_NOTIFICATION_OPTIONS,
+    SERVICE_SET_ROVINIETA_ACCOUNT,
     SERVICE_ADD_FUEL_RECEIPT,
     SERVICE_UPDATE_FUEL_RECEIPT,
     SERVICE_DELETE_FUEL_RECEIPT,
@@ -76,6 +78,7 @@ from .const import (
     LEGAL_DATA_SOURCE,
     LEGAL_END_DATE,
     LEGAL_OPTION_IGNORED,
+    LEGAL_SOURCE_CNAIR_EROVINIETA,
     LEGAL_SOURCE_EROVINIETA,
     LEGAL_START_DATE,
     LEGAL_TYPE_CASCO,
@@ -95,6 +98,7 @@ from .const import (
 from .maintenance import get_maintenance_value, normalize_vehicles, set_maintenance_value
 from .legal import set_legal_ignored
 from .rovinieta.api import ERovinietaApiClient
+from .rovinieta.cnair_api import CnairERovinietaApiClient
 from .rovinieta.coordinator import CarManagerRovinietaCoordinator
 from .storage import CarManagerFuelReceiptStore, CarManagerServiceHistoryStore, CarManagerVehicleStore, merge_vehicle_sources
 from .tire import CarManagerTireSetStore
@@ -734,6 +738,18 @@ SET_NOTIFICATION_OPTIONS_SCHEMA = vol.Schema(
     }
 )
 
+SET_ROVINIETA_ACCOUNT_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Optional(CONF_ROVINIETA_USERNAME, default=""): str,
+        vol.Optional(CONF_ROVINIETA_PASSWORD, default=""): str,
+        vol.Optional(
+            CONF_ROVINIETA_SCAN_INTERVAL,
+            default=DEFAULT_ROVINIETA_SCAN_INTERVAL,
+        ): vol.Coerce(int),
+    }
+)
+
 async def _async_register_services(hass: HomeAssistant) -> None:
     """Funcție internă pentru înregistrare services."""
 
@@ -756,6 +772,7 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         and hass.services.has_service(DOMAIN, SERVICE_CLEANUP_ORPHAN_ENTITIES)
         and hass.services.has_service(DOMAIN, SERVICE_REFRESH_LICENSE_STATUS)
         and hass.services.has_service(DOMAIN, SERVICE_SET_NOTIFICATION_OPTIONS)
+        and hass.services.has_service(DOMAIN, SERVICE_SET_ROVINIETA_ACCOUNT)
         and hass.services.has_service(DOMAIN, SERVICE_ADD_FUEL_RECEIPT)
         and hass.services.has_service(DOMAIN, SERVICE_UPDATE_FUEL_RECEIPT)
         and hass.services.has_service(DOMAIN, SERVICE_DELETE_FUEL_RECEIPT)
@@ -825,6 +842,34 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             await async_check_maintenance_notifications(hass, entry)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Nu am putut reevalua notificările după actualizarea setărilor: %s", err)
+
+    async def async_set_rovinieta_account(call: ServiceCall) -> None:
+        """Actualizează contul online de rovinietă din dashboard sau servicii.
+
+        Parola nu se loghează și nu se modifică atunci când este trimisă goală,
+        cu excepția cazului în care utilizatorul golește și numele de utilizator.
+        """
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        options = dict(entry.options or {})
+
+        username = str(call.data.get(CONF_ROVINIETA_USERNAME) or "").strip()
+        password = str(call.data.get(CONF_ROVINIETA_PASSWORD) or "")
+        scan_interval = max(
+            MIN_ROVINIETA_SCAN_INTERVAL,
+            int(call.data.get(CONF_ROVINIETA_SCAN_INTERVAL) or DEFAULT_ROVINIETA_SCAN_INTERVAL),
+        )
+
+        options[CONF_ROVINIETA_USERNAME] = username
+        if password:
+            options[CONF_ROVINIETA_PASSWORD] = password
+        elif not username:
+            options.pop(CONF_ROVINIETA_PASSWORD, None)
+        options[CONF_ROVINIETA_SCAN_INTERVAL] = scan_interval
+
+        hass.config_entries.async_update_entry(entry, options=options)
+        await hass.config_entries.async_reload(entry.entry_id)
+
 
     async def async_add_vehicle(call: ServiceCall) -> None:
         """Gestionează asincron operațiunea pentru adăugare vehicul."""
@@ -1102,6 +1147,14 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             SERVICE_SET_NOTIFICATION_OPTIONS,
             async_set_notification_options,
             schema=SET_NOTIFICATION_OPTIONS_SCHEMA,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_ROVINIETA_ACCOUNT):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_ROVINIETA_ACCOUNT,
+            async_set_rovinieta_account,
+            schema=SET_ROVINIETA_ACCOUNT_SCHEMA,
         )
 
     if not hass.services.has_service(DOMAIN, SERVICE_ADD_VEHICLE):
@@ -1472,16 +1525,22 @@ async def _async_sync_rovinieta_manual_terms(
 
         current_source = rovinieta_term.get(LEGAL_DATA_SOURCE)
         current_end_date = rovinieta_term.get(LEGAL_END_DATE)
-        may_update_from_auto = not current_end_date or current_source == LEGAL_SOURCE_EROVINIETA
+        may_update_from_auto = current_source in (
+            None,
+            "",
+            LEGAL_SOURCE_EROVINIETA,
+            LEGAL_SOURCE_CNAIR_EROVINIETA,
+        )
         if not may_update_from_auto:
             continue
 
         start_date = _active_rovinieta_start_date(rovinieta_vehicle)
         price = _active_rovinieta_price(rovinieta_vehicle)
 
+        source = getattr(rovinieta_vehicle, "source", None) or LEGAL_SOURCE_EROVINIETA
         updates: dict[str, Any] = {
             LEGAL_END_DATE: end_date,
-            LEGAL_DATA_SOURCE: LEGAL_SOURCE_EROVINIETA,
+            LEGAL_DATA_SOURCE: source,
         }
         if start_date:
             updates[LEGAL_START_DATE] = start_date
@@ -1519,26 +1578,33 @@ async def _async_setup_rovinieta_coordinator(
     if not username or not password:
         return None
 
-    scan_interval_days = options.get(
+    scan_interval_seconds = options.get(
         CONF_ROVINIETA_SCAN_INTERVAL,
         DEFAULT_ROVINIETA_SCAN_INTERVAL,
     )
     try:
-        scan_interval_days = int(scan_interval_days)
+        scan_interval_seconds = int(scan_interval_seconds)
     except (TypeError, ValueError):
-        scan_interval_days = DEFAULT_ROVINIETA_SCAN_INTERVAL
+        scan_interval_seconds = DEFAULT_ROVINIETA_SCAN_INTERVAL
 
-    scan_interval_days = max(1, scan_interval_days)
+    scan_interval_seconds = max(MIN_ROVINIETA_SCAN_INTERVAL, scan_interval_seconds)
 
+    session = async_get_clientsession(hass)
     client = ERovinietaApiClient(
-        async_get_clientsession(hass),
+        session,
+        username=username,
+        password=password,
+    )
+    cnair_client = CnairERovinietaApiClient(
+        session,
         username=username,
         password=password,
     )
     coordinator = CarManagerRovinietaCoordinator(
         hass,
         client,
-        scan_interval_seconds=scan_interval_days * 24 * 60 * 60,
+        scan_interval_seconds=scan_interval_seconds,
+        cnair_client=cnair_client,
     )
 
     await coordinator.async_config_entry_first_refresh()

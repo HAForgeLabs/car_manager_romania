@@ -291,9 +291,9 @@ class CarManagerOptionsFlow(config_entries.OptionsFlow):
         language = (getattr(self.hass.config, "language", None) or "").lower()
 
         if language.startswith("ro"):
-            return "Lasă parola goală dacă nu vrei să o modifici."
+            return "Introdu datele contului de pe e-rovinieta.ro sau www.erovinieta.ro. Integrarea detectează automat portalul disponibil. Lasă parola goală dacă nu vrei să o modifici."
 
-        return "Leave the password empty if you do not want to change it."
+        return "Enter the account credentials from e-rovinieta.ro or www.erovinieta.ro. The integration detects the available portal automatically. Leave the password empty if you do not want to change it."
 
     @staticmethod
     def _generate_vehicle_id(

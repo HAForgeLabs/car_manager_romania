@@ -1374,3 +1374,38 @@ set_notification_options:
       required: false
       selector:
         boolean:
+
+set_rovinieta_account:
+  name: Setează cont rovinietă online
+  description: Salvează datele contului de rovinietă online pentru e-rovinieta.ro sau portalul oficial CNAIR erovinieta.ro. Integrarea detectează automat sursa disponibilă.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Opțional. ID-ul config entry-ului Car Manager România. Se poate omite dacă există o singură instanță.
+      required: false
+      selector:
+        text:
+    rovinieta_username:
+      name: Utilizator cont rovinietă online
+      description: Adresa de e-mail sau utilizatorul contului de pe e-rovinieta.ro ori www.erovinieta.ro.
+      required: false
+      selector:
+        text:
+    rovinieta_password:
+      name: Parolă cont rovinietă online
+      description: Lasă parola goală dacă vrei să păstrezi parola deja salvată. Dacă golești și utilizatorul, parola salvată se șterge.
+      required: false
+      selector:
+        text:
+          type: password
+    rovinieta_scan_interval:
+      name: Interval actualizare rovinietă
+      description: Intervalul de actualizare în secunde. Valoarea minimă acceptată este 900 secunde.
+      required: false
+      default: 21600
+      selector:
+        number:
+          min: 900
+          mode: box
+          step: 60
+          unit_of_measurement: secunde

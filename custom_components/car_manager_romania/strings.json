@@ -18,7 +18,7 @@
         "title": "Configurare Car Manager România",
         "menu_options": {
           "add_vehicle": "Adaugă autovehicul",
-          "rovinieta": "Configurează cont e-rovinieta.ro",
+          "rovinieta": "Configurează cont rovinietă online",
           "notifications": "Configurează notificări"
         }
       },
@@ -32,11 +32,11 @@
         }
       },
       "rovinieta": {
-        "title": "Cont e-rovinieta.ro",
+        "title": "Cont rovinietă online",
         "description": "{password_note}",
         "data": {
-          "rovinieta_username": "Utilizator e-rovinieta.ro",
-          "rovinieta_password": "Parolă e-rovinieta.ro",
+          "rovinieta_username": "Utilizator cont rovinietă online",
+          "rovinieta_password": "Parolă cont rovinietă online",
           "rovinieta_scan_interval": "Interval actualizare rovinietă, în secunde"
         }
       },

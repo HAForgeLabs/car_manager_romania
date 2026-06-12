@@ -8,12 +8,17 @@ from typing import Any
 
 
 def parse_unix_timestamp(value: Any) -> datetime | None:
-    """Funcție pentru parse unix timestamp."""
+    """Funcție pentru parse unix timestamp în secunde sau milisecunde."""
     if value in (None, "", 0, "0"):
         return None
 
     try:
-        return datetime.fromtimestamp(int(value), UTC)
+        timestamp = int(value)
+        # Portalul oficial CNAIR returnează datele în milisecunde, iar e-rovinieta.ro
+        # poate returna timestamp-uri în secunde. Normalizăm defensiv ambele variante.
+        if abs(timestamp) > 100_000_000_000:
+            timestamp = timestamp / 1000
+        return datetime.fromtimestamp(timestamp, UTC)
     except (TypeError, ValueError, OSError):
         return None
 

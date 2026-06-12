@@ -31,6 +31,7 @@ class VehicleData:
     expiry: datetime | None
     days_remaining: int | None
     active_vignette: dict[str, Any] | None
+    source: str = "e-rovinieta.ro"
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
 
@@ -48,6 +49,7 @@ class OrderData:
     value_total: float | None
     plate_numbers: list[str]
     invoice: str | None
+    source: str = "e-rovinieta.ro"
     raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
 

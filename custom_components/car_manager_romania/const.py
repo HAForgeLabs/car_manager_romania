@@ -5,11 +5,11 @@ from __future__ import annotations
 DOMAIN = "car_manager_romania"
 
 DEFAULT_NAME = "Car Manager România"
-VERSION = "1.1.0"
+VERSION = "1.1.1b15"
 
 PLATFORMS: list[str] = ["sensor", "number", "date", "text", "button"]
 
-ATTR_INTEGRATION_VERSION = "1.0.72b67"
+ATTR_INTEGRATION_VERSION = "1.1.1b15"
 
 SIGNAL_VEHICLES_UPDATED = f"{DOMAIN}_vehicles_updated"
 SIGNAL_LICENSE_UPDATED = f"{DOMAIN}_license_updated"
@@ -34,6 +34,7 @@ LICENSE_STATUS_ACTIVATION_LIMIT = "activation_limit"
 LICENSE_STATUS_UNKNOWN = "unknown"
 
 SERVICE_ADD_VEHICLE = "add_vehicle"
+SERVICE_EDIT_VEHICLE = "edit_vehicle"
 SERVICE_REMOVE_VEHICLE = "remove_vehicle"
 SERVICE_RESTORE_VEHICLE = "restore_vehicle"
 SERVICE_RESTORE_ALL_VEHICLES = "restore_all_vehicles"
@@ -51,6 +52,9 @@ SERVICE_REFRESH_LICENSE_STATUS = "refresh_license_status"
 
 SERVICE_SET_NOTIFICATION_OPTIONS = "set_notification_options"
 SERVICE_SET_ROVINIETA_ACCOUNT = "set_rovinieta_account"
+SERVICE_GET_ROVINIETA_ACCOUNT = "get_rovinieta_account"
+SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES = "scan_rovinieta_import_vehicles"
+SERVICE_IMPORT_ROVINIETA_VEHICLE = "import_rovinieta_vehicle"
 SERVICE_ADD_FUEL_RECEIPT = "add_fuel_receipt"
 SERVICE_UPDATE_FUEL_RECEIPT = "update_fuel_receipt"
 SERVICE_DELETE_FUEL_RECEIPT = "delete_fuel_receipt"
@@ -91,6 +95,9 @@ CONF_LICENSE_PLATE = "license_plate"
 CONF_VIN = "vin"
 CONF_KM = "km"
 CONF_FUEL_PROFILE = "fuel_profile"
+CONF_REGISTRATION_COUNTRY = "registration_country"
+CONF_REGISTRATION_CERTIFICATE = "registration_certificate"
+CONF_IMPORT_SOURCE = "import_source"
 
 # Câmpuri existente pentru revizia generală.
 # Le păstrăm pentru compatibilitate cu datele și entitățile deja create.
@@ -330,6 +337,12 @@ BATTERY_TYPES: dict[str, str] = {
 CONF_ROVINIETA_USERNAME = "rovinieta_username"
 CONF_ROVINIETA_PASSWORD = "rovinieta_password"
 CONF_ROVINIETA_SCAN_INTERVAL = "rovinieta_scan_interval"
+CONF_ROVINIETA_PROVIDER = "rovinieta_provider"
+ROVINIETA_PROVIDER_CNAIR = "cnair"
+ROVINIETA_PROVIDER_E_ROVINIETA = "e_rovinieta"
+ROVINIETA_PROVIDERS = {ROVINIETA_PROVIDER_CNAIR, ROVINIETA_PROVIDER_E_ROVINIETA}
+CONF_ROVINIETA_CATEGORY = "rovinieta_category"
+CONF_FETESTI_BRIDGE_CATEGORY = "fetesti_bridge_category"
 
 DEFAULT_ROVINIETA_SCAN_INTERVAL = 6 * 60 * 60
 MIN_ROVINIETA_SCAN_INTERVAL = 15 * 60

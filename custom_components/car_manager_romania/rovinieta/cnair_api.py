@@ -78,6 +78,27 @@ class CnairERovinietaApiClient:
             f"/rest/desktop/home/getDataPaginated?limit={limit}&page={page}&timestamp={timestamp}",
         )
 
+    async def async_get_personal_vehicles(self) -> dict[str, Any]:
+        """Returnează lista vehiculelor salvate în contul CNAIR.
+
+        Endpoint-ul principal observat în HAR este cel cu timestamp. Păstrăm și
+        un fallback fără timestamp, ca să nu pierdem lista dacă portalul schimbă
+        ușor cache-busting-ul cererii.
+        """
+
+        timestamp = self._timestamp_ms()
+        try:
+            return await self._ensure_auth_then_request(
+                "GET",
+                f"/rest/personalVehicles/getVehicleList?timestamp={timestamp}",
+            )
+        except Exception as first_err:  # noqa: BLE001
+            _LOGGER.debug("Prima citire a listei personale CNAIR a eșuat, încerc fallback: %s", first_err)
+            return await self._ensure_auth_then_request(
+                "GET",
+                "/rest/personalVehicles/getVehicleList",
+            )
+
     async def async_fetch_all(self) -> dict[str, Any]:
         """Returnează toate datele necesare pentru roviniete din portalul CNAIR."""
 
@@ -85,6 +106,14 @@ class CnairERovinietaApiClient:
             await self.async_login()
 
         account = await self.async_get_user_data()
+        personal_vehicles: dict[str, Any] = {}
+        try:
+            personal_vehicles = await self.async_get_personal_vehicles()
+        except Exception as err:  # noqa: BLE001
+            # Importul poate folosi în continuare pagina de dashboard. Nu blocăm
+            # rovinieta doar pentru că endpoint-ul listei personale nu răspunde.
+            _LOGGER.debug("Nu am putut citi lista personală de vehicule CNAIR: %s", err)
+
         pages: list[dict[str, Any]] = []
         page = 0
         limit = 50
@@ -108,6 +137,7 @@ class CnairERovinietaApiClient:
         return {
             "account": account,
             "dashboard_pages": pages,
+            "personal_vehicles": personal_vehicles,
             "fetched_at": datetime.now(UTC).isoformat(),
         }
 

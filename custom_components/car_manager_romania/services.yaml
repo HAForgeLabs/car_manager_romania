@@ -34,6 +34,60 @@ add_vehicle:
           step: 1
           mode: box
 
+edit_vehicle:
+  name: Editează autovehicul
+  description: Actualizează numele, numărul de înmatriculare, VIN-ul și datele principale ale unui autovehicul existent, fără să schimbe ID-ul intern și fără să șteargă istoricul.
+  fields:
+    vehicle_id:
+      name: Autovehicul
+      description: ID-ul intern stabil al autovehiculului care trebuie editat.
+      required: true
+      example: sb01abc
+      selector:
+        text:
+    name:
+      name: Nume mașină
+      description: Numele afișat al autovehiculului.
+      required: false
+      example: Opel Insignia B
+      selector:
+        text:
+    license_plate:
+      name: Număr înmatriculare
+      description: Numărul de înmatriculare afișat pentru autovehicul.
+      required: false
+      example: SB01ABC
+      selector:
+        text:
+    vin:
+      name: VIN
+      description: Seria VIN / seria de șasiu a autovehiculului.
+      required: false
+      selector:
+        text:
+    km:
+      name: Kilometraj actual
+      description: Kilometrajul actual al autovehiculului.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000
+          step: 1
+          mode: box
+    registration_country:
+      name: Țara de înmatriculare
+      description: Țara de înmatriculare, dacă este disponibilă.
+      required: false
+      selector:
+        text:
+    registration_certificate:
+      name: Serie talon
+      description: Seria certificatului de înmatriculare, dacă este disponibilă.
+      required: false
+      selector:
+        text:
+
 remove_vehicle:
   name: Dezactivează autovehicul
   description: Dezactivează un autovehicul din Car Manager România. Datele rămân în storage pentru siguranță, dar autovehiculul nu mai este încărcat în card și entități după reîncărcarea integrării.
@@ -1377,7 +1431,7 @@ set_notification_options:
 
 set_rovinieta_account:
   name: Setează cont rovinietă online
-  description: Salvează datele contului de rovinietă online pentru e-rovinieta.ro sau portalul oficial CNAIR erovinieta.ro. Integrarea detectează automat sursa disponibilă.
+  description: "Salvează datele contului de rovinietă online pentru portalul selectat: CNAIR / erovinieta.ro sau e-rovinieta.ro."
   fields:
     entry_id:
       name: Entry ID
@@ -1398,6 +1452,18 @@ set_rovinieta_account:
       selector:
         text:
           type: password
+    rovinieta_provider:
+      name: Portal rovinietă
+      description: Alege portalul pentru contul introdus. Integrarea nu mai încearcă automat ambele portaluri.
+      required: false
+      default: cnair
+      selector:
+        select:
+          options:
+            - value: cnair
+              label: CNAIR / erovinieta.ro
+            - value: e_rovinieta
+              label: e-rovinieta.ro
     rovinieta_scan_interval:
       name: Interval actualizare rovinietă
       description: Intervalul de actualizare în secunde. Valoarea minimă acceptată este 900 secunde.
@@ -1409,3 +1475,50 @@ set_rovinieta_account:
           mode: box
           step: 60
           unit_of_measurement: secunde
+
+
+get_rovinieta_account:
+  name: Citește cont rovinietă online
+  description: Returnează sumarul contului de rovinietă online salvat, fără să expună parola. Folosit de dashboard pentru afișarea contului conectat.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Opțional. ID-ul config entry-ului Car Manager România. Se poate omite dacă există o singură instanță.
+      required: false
+      selector:
+        text:
+
+scan_rovinieta_import_vehicles:
+  name: Caută autovehicule în contul de rovinietă
+  description: Scanează portalul online selectat pentru rovinietă și returnează autovehiculele disponibile pentru import în dashboard.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Opțional. ID-ul config entry-ului Car Manager România. Se poate omite dacă există o singură instanță.
+      required: false
+      selector:
+        text:
+    refresh:
+      name: Actualizează datele online
+      description: Dacă este activ, cere o actualizare online înainte de afișarea listei.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+import_rovinieta_vehicle:
+  name: Importă autovehicul din contul de rovinietă
+  description: Importă un singur autovehicul selectat din contul de rovinietă. Mașinile existente nu sunt duplicate.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Opțional. ID-ul config entry-ului Car Manager România. Se poate omite dacă există o singură instanță.
+      required: false
+      selector:
+        text:
+    import_key:
+      name: Cheie import
+      description: Cheia autovehiculului returnată de scanarea contului de rovinietă.
+      required: true
+      selector:
+        text:

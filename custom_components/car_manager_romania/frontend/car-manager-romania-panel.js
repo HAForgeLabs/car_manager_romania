@@ -50,6 +50,21 @@ class CarManagerRomaniaPanel extends HTMLElement {
     this._backupMessage = "";
     this._rovinietaAccountBusy = false;
     this._rovinietaAccountMessage = "";
+    this._rovinietaSavedUsername = "";
+    this._rovinietaSavedProvider = this._loadPreference("rovinieta_provider") || "cnair";
+    this._rovinietaSavedInterval = Number(this._loadPreference("rovinieta_scan_interval") || 21600) || 21600;
+    this._rovinietaHasSavedPassword = false;
+    this._rovinietaAccountLoaded = false;
+    this._rovinietaAccountLoadBusy = false;
+    this._rovinietaImportBusy = false;
+    this._rovinietaImportMessage = "";
+    this._rovinietaImportVehicles = [];
+    this._vehicleEditOpen = new Set();
+    this._vehicleEditDrafts = {};
+    this._vehicleEditMessage = {};
+    this._vehicleEditBusy = null;
+    this._vehicleLocalOverrides = {};
+    this._lastCenteredTab = null;
   }
 
   set panel(panel) {
@@ -79,6 +94,10 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _savePreference(name, value) {
     try { window.localStorage?.setItem(this._storageKey(name), value); } catch (_err) {}
+  }
+
+  _removePreference(name) {
+    try { window.localStorage?.removeItem(this._storageKey(name)); } catch (_err) {}
   }
 
   _isCompactLayout() {
@@ -243,25 +262,27 @@ class CarManagerRomaniaPanel extends HTMLElement {
       const vehicleId = String(attrs.vehicle_id || attrs.license_plate || attrs.vin || entityId).trim();
       if (!vehicleId || seen.has(vehicleId)) continue;
       seen.add(vehicleId);
+      const localOverride = this._vehicleLocalOverrides?.[vehicleId] || {};
+      const mergedAttrs = { ...attrs, ...localOverride };
       vehicles.push({
         entityId,
         vehicle_id: vehicleId,
-        label: attrs.name || attrs.license_plate || attrs.vin || this._shortLabel(attrs.friendly_name || "Autovehicul"),
-        plate: attrs.license_plate || "",
-        vin: attrs.vin || "",
+        label: mergedAttrs.name || mergedAttrs.license_plate || mergedAttrs.vin || this._shortLabel(attrs.friendly_name || "Autovehicul"),
+        plate: mergedAttrs.license_plate || "",
+        vin: mergedAttrs.vin || "",
         status: stateObj.state || "—",
-        attrs,
+        attrs: mergedAttrs,
         entities: [{ entityId, stateObj, registry: this._hass?.entities?.[entityId] || {} }],
-        statistics: attrs.vehicle_statistics || {},
-        charts: attrs.vehicle_chart_data || {},
-        service_history: Array.isArray(attrs.service_history) ? attrs.service_history : [],
-        fuel_receipts: Array.isArray(attrs.fuel_receipts) ? attrs.fuel_receipts : [],
-        fuel_intervals: Array.isArray(attrs.fuel_consumption_intervals) ? attrs.fuel_consumption_intervals : [],
-        tire_sets: Array.isArray(attrs.tire_sets) ? attrs.tire_sets : [],
-        equipment_items: Array.isArray(attrs.equipment_items) ? attrs.equipment_items : [],
-        battery_items: Array.isArray(attrs.battery_items) ? attrs.battery_items : [],
-        current_battery: attrs.current_battery || null,
-        summary: attrs,
+        statistics: mergedAttrs.vehicle_statistics || {},
+        charts: mergedAttrs.vehicle_chart_data || {},
+        service_history: Array.isArray(mergedAttrs.service_history) ? mergedAttrs.service_history : [],
+        fuel_receipts: Array.isArray(mergedAttrs.fuel_receipts) ? mergedAttrs.fuel_receipts : [],
+        fuel_intervals: Array.isArray(mergedAttrs.fuel_consumption_intervals) ? mergedAttrs.fuel_consumption_intervals : [],
+        tire_sets: Array.isArray(mergedAttrs.tire_sets) ? mergedAttrs.tire_sets : [],
+        equipment_items: Array.isArray(mergedAttrs.equipment_items) ? mergedAttrs.equipment_items : [],
+        battery_items: Array.isArray(mergedAttrs.battery_items) ? mergedAttrs.battery_items : [],
+        current_battery: mergedAttrs.current_battery || null,
+        summary: mergedAttrs,
       });
     }
 
@@ -455,6 +476,8 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _render(force = false) {
     if (!this.shadowRoot) return;
+    const hadPanel = Boolean(this.shadowRoot?.querySelector(".cmr-panel"));
+    const previousScrollY = window.scrollY || document.documentElement?.scrollTop || 0;
     const vehicles = this._buildVehicles();
     const summary = this._fleetSummary();
     if (!vehicles.some((vehicle) => vehicle.vehicle_id === this._vehicleFilter)) this._vehicleFilter = "all";
@@ -473,6 +496,13 @@ class CarManagerRomaniaPanel extends HTMLElement {
     `;
     this._tooltip = this.shadowRoot.querySelector(".cmr-tooltip");
     this._attachEvents();
+    if ((force || hadPanel) && previousScrollY > 0) {
+      // Păstrăm poziția în pagină după randări interne ca să evităm salturile pe mobil.
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: previousScrollY, left: 0, behavior: "auto" });
+        requestAnimationFrame(() => window.scrollTo({ top: previousScrollY, left: 0, behavior: "auto" }));
+      });
+    }
   }
 
   _renderHero(summary) {
@@ -493,7 +523,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs" style="position:absolute;right:12px;top:12px;bottom:auto;z-index:4;">
               <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.1.0</small></span>
+              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.1.1b15</small></span>
             </a>
           </div>
           <aside class="cmr-hero-side" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;width:100%;max-width:100%;margin-top:14px;">
@@ -519,7 +549,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._renderHeroCar()}
           <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs">
             <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.1.0</small></span>
+            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.1.1b15</small></span>
           </a>
         </div>
         <aside class="cmr-hero-side">
@@ -552,7 +582,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           </button>
           <nav class="cmr-tabs" aria-label="Navigare Car Manager România" style="display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity;max-width:100%;min-width:0;scrollbar-width:none;">
             ${this._tabs().map(([id, label, icon]) => `
-              <button class="cmr-tab ${this._activeTab === id ? "active" : ""}" data-tab="${id}" title="${this._escape(label)}" style="flex:0 0 ${this._activeTab === id ? "64" : "58"}px;min-width:${this._activeTab === id ? "64" : "58"}px;max-width:${this._activeTab === id ? "64" : "58"}px;scroll-snap-align:center;">
+              <button class="cmr-tab ${this._activeTab === id ? "active" : ""}" data-tab="${id}" title="${this._escape(label)}" style="flex:0 0 58px;min-width:58px;max-width:58px;scroll-snap-align:center;">
                 <ha-icon icon="${icon}"></ha-icon><span style="display:none;">${this._escape(label)}</span>
               </button>
             `).join("")}
@@ -2896,13 +2926,43 @@ class CarManagerRomaniaPanel extends HTMLElement {
     if (renderAfter) this._render(true);
   }
 
+  async _loadRovinietaAccountStatus(force = false) {
+    if (!this._hass || this._rovinietaAccountLoadBusy) return;
+    if (this._rovinietaAccountLoaded && !force) return;
+
+    this._rovinietaAccountLoadBusy = true;
+    try {
+      const response = await this._callCarManagerServiceWithResponse("get_rovinieta_account", {});
+      if (response && typeof response === "object") {
+        this._rovinietaSavedUsername = String(response.username || "").trim();
+        this._rovinietaSavedProvider = ["cnair", "e_rovinieta"].includes(String(response.provider || "")) ? String(response.provider) : "cnair";
+        this._rovinietaSavedInterval = Number(response.scan_interval || this._rovinietaSavedInterval || 21600) || 21600;
+        this._rovinietaHasSavedPassword = Boolean(response.has_password);
+        this._rovinietaAccountLoaded = true;
+        this._removePreference("rovinieta_username");
+        this._savePreference("rovinieta_provider", this._rovinietaSavedProvider);
+        this._savePreference("rovinieta_scan_interval", String(this._rovinietaSavedInterval));
+        this._lastSignature = "";
+        this._render(true);
+      }
+    } catch (_error) {
+      // Dacă serviciul nu este încă disponibil, rămânem pe valorile locale.
+      // Nu afișăm eroare aici ca să nu deranjăm utilizatorul la simpla deschidere a paginii.
+    } finally {
+      this._rovinietaAccountLoadBusy = false;
+    }
+  }
+
+
   async _saveRovinietaAccount(form, clear = false) {
     if (!this._hass || this._rovinietaAccountBusy) return;
 
     const formData = form ? new FormData(form) : new FormData();
-    const username = clear ? "" : String(formData.get("rovinieta_username") || "").trim();
-    const password = clear ? "" : String(formData.get("rovinieta_password") || "");
-    const interval = clear ? 21600 : Math.max(900, Number(formData.get("rovinieta_scan_interval") || 21600));
+    const username = clear ? "" : String(formData.get("cmr_rovinieta_username") || formData.get("rovinieta_username") || "").trim();
+    const password = clear ? "" : String(formData.get("cmr_rovinieta_password") || formData.get("rovinieta_password") || "");
+    const providerValue = String(formData.get("cmr_rovinieta_provider") || formData.get("rovinieta_provider") || this._rovinietaSavedProvider || "cnair");
+    const provider = ["cnair", "e_rovinieta"].includes(providerValue) ? providerValue : "cnair";
+    const interval = clear ? 21600 : Math.max(900, Number(formData.get("cmr_rovinieta_scan_interval") || formData.get("rovinieta_scan_interval") || 21600));
 
     this._rovinietaAccountBusy = true;
     this._rovinietaAccountMessage = clear ? "Se dezactivează contul online..." : "Se salvează contul online...";
@@ -2912,11 +2972,29 @@ class CarManagerRomaniaPanel extends HTMLElement {
       await this._hass.callService("car_manager_romania", "set_rovinieta_account", {
         rovinieta_username: username,
         rovinieta_password: password,
+        rovinieta_provider: provider,
         rovinieta_scan_interval: interval,
       });
+      if (clear) {
+        this._rovinietaSavedUsername = "";
+        this._rovinietaHasSavedPassword = false;
+        this._rovinietaSavedProvider = provider;
+        this._rovinietaAccountLoaded = true;
+        this._removePreference("rovinieta_username");
+        this._savePreference("rovinieta_provider", provider);
+      } else {
+        this._rovinietaSavedUsername = username;
+        this._rovinietaSavedInterval = interval;
+        this._rovinietaSavedProvider = provider;
+        if (password) this._rovinietaHasSavedPassword = true;
+        this._rovinietaAccountLoaded = true;
+        this._removePreference("rovinieta_username");
+        this._savePreference("rovinieta_provider", provider);
+        this._savePreference("rovinieta_scan_interval", String(interval));
+      }
       this._rovinietaAccountMessage = clear
         ? "Contul online de rovinietă a fost dezactivat. Rămâne disponibilă introducerea manuală."
-        : "Contul online de rovinietă a fost salvat. Integrarea se reîncarcă și va detecta automat sursa.";
+        : "Contul online de rovinietă a fost salvat. Poți căuta autovehiculele fără restart sau reîncărcare de pagină.";
     } catch (error) {
       this._rovinietaAccountMessage = error?.message || "Nu am putut salva contul de rovinietă online.";
     } finally {
@@ -2924,6 +3002,130 @@ class CarManagerRomaniaPanel extends HTMLElement {
       this._lastSignature = "";
       this._render(true);
     }
+  }
+
+
+  async _callCarManagerServiceWithResponse(service, payload = {}) {
+    if (!this._hass) throw new Error("Home Assistant nu este disponibil.");
+
+    // Pentru serviciile care întorc răspuns, apelul clasic `callService` nu este
+    // suficient de stabil între versiunile de frontend Home Assistant. Folosim
+    // direct WebSocket API cu `return_response`, iar apoi normalizăm forma
+    // răspunsului ca să funcționeze indiferent dacă HA întoarce obiectul direct
+    // sau îl împachetează în `response` / `service_response`.
+    if (typeof this._hass.callWS === "function") {
+      const raw = await this._hass.callWS({
+        type: "call_service",
+        domain: "car_manager_romania",
+        service,
+        service_data: payload || {},
+        return_response: true,
+      });
+
+      const response = raw?.response ?? raw?.service_response ?? raw;
+      if (response && typeof response === "object") {
+        const serviceKey = `car_manager_romania.${service}`;
+        if (response[serviceKey]) return response[serviceKey];
+        if (response.car_manager_romania?.[service]) return response.car_manager_romania[service];
+      }
+      return response;
+    }
+
+    if (typeof this._hass.callService !== "function") {
+      throw new Error("Serviciul Home Assistant nu este disponibil în acest context.");
+    }
+
+    return await this._hass.callService(
+      "car_manager_romania",
+      service,
+      payload,
+      undefined,
+      true,
+      true,
+    );
+  }
+
+  async _scanRovinietaImportVehicles() {
+    if (!this._hass || this._rovinietaImportBusy) return;
+
+    this._rovinietaImportBusy = true;
+    const portalLabel = this._rovinietaSavedProvider === "e_rovinieta" ? "e-rovinieta.ro" : "CNAIR / erovinieta.ro";
+    this._rovinietaImportMessage = `Se caută autovehicule în ${portalLabel}...`;
+    this._render(true);
+
+    try {
+      const response = await this._callCarManagerServiceWithResponse("scan_rovinieta_import_vehicles", { refresh: true });
+      const vehicles = Array.isArray(response?.vehicles) ? response.vehicles : [];
+      this._rovinietaImportVehicles = vehicles;
+      if (!vehicles.length) {
+        this._rovinietaImportMessage = `Nu am găsit autovehicule disponibile în contul selectat: ${portalLabel}.`;
+      } else {
+        const importable = vehicles.filter((item) => item?.can_import).length;
+        const existing = vehicles.filter((item) => item?.existing).length;
+        this._rovinietaImportMessage = `${vehicles.length} autovehicule găsite · ${importable} pot fi importate · ${existing} există deja.`;
+      }
+    } catch (error) {
+      this._rovinietaImportMessage = error?.message || "Nu am putut căuta autovehicule în contul de rovinietă.";
+    } finally {
+      this._rovinietaImportBusy = false;
+      this._lastSignature = "";
+      this._render(true);
+    }
+  }
+
+  async _importRovinietaVehicle(importKey) {
+    if (!this._hass || this._rovinietaImportBusy || !importKey) return;
+
+    this._rovinietaImportBusy = true;
+    this._rovinietaImportMessage = "Se importă autovehiculul selectat...";
+    this._render(true);
+
+    try {
+      const response = await this._callCarManagerServiceWithResponse("import_rovinieta_vehicle", { import_key: importKey });
+      this._rovinietaImportMessage = response?.message || "Operațiunea de import s-a finalizat.";
+      await this._scanRovinietaImportVehicles();
+    } catch (error) {
+      this._rovinietaImportMessage = error?.message || "Nu am putut importa autovehiculul selectat.";
+    } finally {
+      this._rovinietaImportBusy = false;
+      this._lastSignature = "";
+      this._render(true);
+    }
+  }
+
+  _renderRovinietaImportVehicles() {
+    const vehicles = Array.isArray(this._rovinietaImportVehicles) ? this._rovinietaImportVehicles : [];
+    if (!vehicles.length) return "";
+
+    return `
+      <div class="cmr-rovinieta-import-list">
+        ${vehicles.map((vehicle) => {
+          const status = vehicle.existing
+            ? `Există deja${vehicle.existing_vehicle_name ? `: ${this._escape(vehicle.existing_vehicle_name)}` : ""}`
+            : "Poate fi importat";
+          return `
+            <article class="cmr-rovinieta-import-item ${vehicle.existing ? "is-existing" : "is-new"}">
+              <div>
+                <strong>${this._escape(vehicle.license_plate || "Autovehicul fără număr")}</strong>
+                <span>${this._escape(vehicle.source_label || vehicle.source || "sursă necunoscută")}</span>
+              </div>
+              <dl>
+                <div><dt>Țară</dt><dd>${this._escape(vehicle.country || "-")}</dd></div>
+                <div><dt>VIN</dt><dd>${this._escape(vehicle.vin || "-")}</dd></div>
+                <div><dt>Serie talon</dt><dd>${this._escape(vehicle.registration_certificate || "-")}</dd></div>
+                <div><dt>Categorie rovinietă</dt><dd>${this._escape(vehicle.rovinieta_category || "-")}</dd></div>
+                <div><dt>Taxă pod Fetești</dt><dd>${this._escape(vehicle.fetesti_bridge_category || "-")}</dd></div>
+                <div><dt>Rovinietă</dt><dd>${this._escape(vehicle.rovinieta_end_date ? `activă până la ${vehicle.rovinieta_end_date}` : vehicle.rovinieta_status || "-")}</dd></div>
+              </dl>
+              <div class="cmr-rovinieta-import-footer">
+                <span>${this._escape(status)}</span>
+                ${vehicle.can_import ? `<button type="button" data-action="rovinieta-import-vehicle" data-import-key="${this._escape(vehicle.import_key || "")}" ${this._rovinietaImportBusy ? "disabled" : ""}>Importă</button>` : `<button type="button" class="secondary" disabled>Definită deja</button>`}
+              </div>
+            </article>
+          `;
+        }).join("")}
+      </div>
+    `;
   }
 
 
@@ -2973,10 +3175,24 @@ class CarManagerRomaniaPanel extends HTMLElement {
   }
 
   _renderSettingsPage() {
+    if (!this._rovinietaAccountLoaded && !this._rovinietaAccountLoadBusy) {
+      this._loadRovinietaAccountStatus(false);
+    }
     const notificationValues = this._notificationOptionsForForm();
     const backupFilename = this._backupFilename || "car_manager_romania_backup.json";
     const vehicles = this._buildVehicles();
     const rovinietaSource = this._rovinietaSourceSummary(vehicles);
+    const rovinietaUsername = this._escape(this._rovinietaSavedUsername || "");
+    const rovinietaProvider = ["cnair", "e_rovinieta"].includes(this._rovinietaSavedProvider) ? this._rovinietaSavedProvider : "cnair";
+    const rovinietaProviderLabel = rovinietaProvider === "e_rovinieta" ? "e-rovinieta.ro" : "CNAIR / erovinieta.ro";
+    const rovinietaInterval = Number(this._rovinietaSavedInterval || 21600) || 21600;
+    const rovinietaAccountConfigured = Boolean(this._rovinietaSavedUsername && this._rovinietaHasSavedPassword);
+    const rovinietaAccountLabel = this._rovinietaSavedUsername
+      ? `Conectat la ${this._escape(rovinietaProviderLabel)} ca ${this._escape(this._rovinietaSavedUsername)}`
+      : "Niciun cont online salvat";
+    const rovinietaAccountHelper = this._rovinietaSavedUsername
+      ? (this._rovinietaHasSavedPassword ? "Parola este salvată securizat în opțiunile integrării și nu este afișată." : "Utilizator salvat, dar parola nu este confirmată ca salvată.")
+      : "Salvează utilizatorul și parola pentru a putea căuta autovehicule în cont.";
     return `
       <main class="cmr-page cmr-settings-page">
         <div class="cmr-page-title">
@@ -2989,8 +3205,8 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._settingsHeroTile("Notificări", notificationValues.notifications_enabled ? "active" : "oprite", "categorii salvate în integrare", "mdi:bell-cog-outline")}
           ${this._settingsHeroTile("Backup", backupFilename, "fișier în /config", "mdi:backup-restore")}
           ${this._settingsHeroTile("Autovehicule", vehicles.length, "profiluri active în integrare", "mdi:car-multiple")}
-          ${this._settingsHeroTile("Rovinietă", rovinietaSource, "sursă detectată automat", "mdi:road-variant")}
-          ${this._settingsHeroTile("Versiune", "1.1.0", "panel nou Car Manager", "mdi:package-variant-closed-check")}
+          ${this._settingsHeroTile("Rovinietă", rovinietaProviderLabel, "portal cont online", "mdi:road-variant")}
+          ${this._settingsHeroTile("Versiune", "1.1.1b15", "panel nou Car Manager", "mdi:package-variant-closed-check")}
         </section>
 
         <section class="cmr-settings-grid">
@@ -3051,21 +3267,35 @@ class CarManagerRomaniaPanel extends HTMLElement {
               <div>
                 <span>Rovinietă online</span>
                 <h3>Cont e-rovinieta / CNAIR</h3>
-                <p>Introdu datele contului de pe e-rovinieta.ro sau www.erovinieta.ro. Integrarea va detecta automat portalul disponibil și va păstra fallback-ul manual.</p>
+                <p>Alege portalul pe care ai cont, apoi introdu utilizatorul și parola. Fallback-ul manual rămâne disponibil.</p>
               </div>
             </div>
-            <form data-form="rovinieta-account" class="cmr-settings-form">
+            <div class="cmr-rovinieta-account-status ${rovinietaAccountConfigured ? "is-configured" : "is-empty"}">
+              <ha-icon icon="${rovinietaAccountConfigured ? "mdi:account-check" : "mdi:account-alert-outline"}"></ha-icon>
+              <div>
+                <strong>${rovinietaAccountLabel}</strong>
+                <small>${rovinietaAccountHelper}</small>
+              </div>
+            </div>
+            <form data-form="rovinieta-account" class="cmr-settings-form" autocomplete="off">
+              <label class="cmr-settings-field">
+                <span>Portal cont rovinietă</span>
+                <select name="cmr_rovinieta_provider" ${this._rovinietaAccountBusy ? "disabled" : ""}>
+                  <option value="cnair" ${rovinietaProvider === "cnair" ? "selected" : ""}>CNAIR / erovinieta.ro</option>
+                  <option value="e_rovinieta" ${rovinietaProvider === "e_rovinieta" ? "selected" : ""}>e-rovinieta.ro</option>
+                </select>
+              </label>
               <label class="cmr-settings-field">
                 <span>Utilizator cont rovinietă online</span>
-                <input type="text" name="rovinieta_username" autocomplete="username" placeholder="email sau utilizator" ${this._rovinietaAccountBusy ? "disabled" : ""}>
+                <input type="text" name="cmr_rovinieta_username" autocomplete="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore="true" value="${rovinietaUsername}" placeholder="email sau utilizator" ${this._rovinietaAccountBusy ? "disabled" : ""}>
               </label>
               <label class="cmr-settings-field">
                 <span>Parolă cont rovinietă online</span>
-                <input type="password" name="rovinieta_password" autocomplete="current-password" placeholder="lasă gol pentru a păstra parola salvată" ${this._rovinietaAccountBusy ? "disabled" : ""}>
+                <input type="password" name="cmr_rovinieta_password" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" placeholder="lasă gol pentru a păstra parola salvată" ${this._rovinietaAccountBusy ? "disabled" : ""}>
               </label>
               <label class="cmr-settings-field">
                 <span>Interval actualizare, în secunde</span>
-                <input type="number" name="rovinieta_scan_interval" min="900" step="60" value="21600" ${this._rovinietaAccountBusy ? "disabled" : ""}>
+                <input type="number" name="cmr_rovinieta_scan_interval" min="900" step="60" value="${rovinietaInterval}" ${this._rovinietaAccountBusy ? "disabled" : ""}>
               </label>
               <div class="cmr-settings-actions wrap">
                 <button type="submit" ${this._rovinietaAccountBusy ? "disabled" : ""}>${this._rovinietaAccountBusy ? "Se salvează..." : "Salvează contul"}</button>
@@ -3074,6 +3304,19 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </form>
             <p class="cmr-settings-note">Parola nu este afișată în dashboard. Dacă o lași goală, se păstrează parola existentă; dacă dezactivezi contul online, se golește și parola salvată.</p>
             ${this._rovinietaAccountMessage ? `<div class="cmr-settings-message">${this._escape(this._rovinietaAccountMessage)}</div>` : ""}
+
+            <div class="cmr-rovinieta-import-block">
+              <div class="cmr-rovinieta-import-head">
+                <div>
+                  <span>Import autovehicule</span>
+                  <h4>Autovehicule din contul de rovinietă</h4>
+                  <p>Caută mașinile disponibile în portalul selectat mai sus. Mașinile existente sunt afișate ca definite deja și nu sunt duplicate.</p>
+                </div>
+                <button type="button" data-action="rovinieta-scan-import" ${this._rovinietaImportBusy ? "disabled" : ""}>${this._rovinietaImportBusy ? "Caut..." : "Caută autovehicule"}</button>
+              </div>
+              ${this._rovinietaImportMessage ? `<div class="cmr-settings-message">${this._escape(this._rovinietaImportMessage)}</div>` : ""}
+              ${this._renderRovinietaImportVehicles()}
+            </div>
           </article>
 
           <article class="cmr-settings-card">
@@ -3106,7 +3349,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <div class="cmr-settings-steps">
               <div><strong>1</strong><span>Restart Home Assistant după copierea fișierelor.</span></div>
-              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.1.0</code>.</span></div>
+              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.1.1b15</code>.</span></div>
               <div><strong>3</strong><span>Hard refresh în browser sau golire cache aplicație mobilă.</span></div>
             </div>
           </article>
@@ -3855,6 +4098,9 @@ class CarManagerRomaniaPanel extends HTMLElement {
     const statusClass = alerts.some((item) => item.level === "critical") ? "is-critical" : alerts.length ? "is-warning" : "is-ok";
     const vin = vehicle.vin || vehicle.attrs?.vin || "";
     const plate = vehicle.plate || vehicle.attrs?.license_plate || "";
+    const vehicleKey = vehicle.vehicle_id || vehicle.vin || vehicle.plate || vehicle.label || "";
+    const editOpen = this._vehicleEditOpen.has(vehicleKey);
+    const editMessage = this._vehicleEditMessage[vehicleKey] || "";
     return `
       <article class="cmr-admin-vehicle-card ${statusClass}">
         <header class="cmr-admin-vehicle-head">
@@ -3866,8 +4112,12 @@ class CarManagerRomaniaPanel extends HTMLElement {
           <div class="cmr-admin-status">
             <strong>${statusClass === "is-critical" ? "Critic" : statusClass === "is-warning" ? "Atenție" : "OK"}</strong>
             <span>${alerts.length ? `${alerts.length} elemente de urmărit` : "fără alerte active"}</span>
+            <button type="button" data-action="toggle-vehicle-edit" data-vehicle="${this._escape(vehicleKey)}">${editOpen ? "Închide editarea" : "Editează mașina"}</button>
           </div>
         </header>
+
+        ${editOpen ? this._renderVehicleEditForm(vehicle, vehicleKey) : ""}
+        ${editMessage ? `<div class="cmr-admin-message">${this._escape(editMessage)}</div>` : ""}
 
         <div class="cmr-admin-profile-grid">
           ${this._adminInfoTile("Număr", plate || "—", "mdi:card-account-details-outline")}
@@ -3911,6 +4161,39 @@ class CarManagerRomaniaPanel extends HTMLElement {
     `;
   }
 
+
+
+  _renderVehicleEditForm(vehicle, vehicleKey) {
+    const draft = this._vehicleEditDrafts[vehicleKey] || {};
+    const attrs = vehicle.attrs || {};
+    const busy = this._vehicleEditBusy === vehicleKey;
+    const name = draft.name ?? vehicle.label ?? vehicle.name ?? "";
+    const plate = draft.license_plate ?? vehicle.plate ?? attrs.license_plate ?? attrs.numar_inmatriculare ?? "";
+    const vin = draft.vin ?? vehicle.vin ?? attrs.vin ?? attrs.serie_sasiu ?? "";
+    const km = draft.km ?? this._vehicleCurrentKm(vehicle) ?? attrs.current_km ?? attrs.km_actuali ?? 0;
+    const country = draft.registration_country ?? attrs.registration_country ?? attrs.country ?? attrs.tara_inmatriculare ?? "România";
+    const certificate = draft.registration_certificate ?? attrs.registration_certificate ?? attrs.serie_talon ?? attrs.certificate_number ?? "";
+
+    return `
+      <form class="cmr-admin-service-form cmr-admin-edit-form" data-form="vehicle-edit" data-vehicle="${this._escape(vehicleKey)}">
+        <div class="cmr-admin-help">
+          Editează datele de bază ale autovehiculului. ID-ul intern rămâne neschimbat, astfel încât istoricul, costurile și reviziile existente să nu fie pierdute.
+        </div>
+        <div class="cmr-admin-form-grid">
+          <label class="wide"><span>Nume autovehicul</span><input type="text" name="name" autocomplete="off" value="${this._escape(name)}" placeholder="ex. Opel Insignia"></label>
+          <label><span>Număr înmatriculare</span><input type="text" name="license_plate" autocomplete="off" value="${this._escape(plate)}" placeholder="ex. SB99NOI"></label>
+          <label><span>VIN / serie șasiu</span><input type="text" name="vin" autocomplete="off" value="${this._escape(vin)}" placeholder="17 caractere"></label>
+          <label><span>Kilometraj actual</span><input type="number" name="km" min="0" step="1" value="${this._escape(km)}"></label>
+          <label><span>Țară înmatriculare</span><input type="text" name="registration_country" autocomplete="off" value="${this._escape(country)}" placeholder="România"></label>
+          <label><span>Serie talon</span><input type="text" name="registration_certificate" autocomplete="off" value="${this._escape(certificate)}" placeholder="opțional"></label>
+        </div>
+        <div class="cmr-admin-form-actions">
+          <button type="submit" ${busy ? "disabled" : ""}>${busy ? "Se salvează..." : "Salvează modificările"}</button>
+          <button type="button" class="secondary" data-action="cancel-vehicle-edit" data-vehicle="${this._escape(vehicleKey)}">Renunță</button>
+        </div>
+      </form>
+    `;
+  }
 
   _renderAdminMaintenanceTable(vehicle) {
     const rows = this._adminMaintenanceRows(vehicle);
@@ -4230,6 +4513,63 @@ class CarManagerRomaniaPanel extends HTMLElement {
     return value || null;
   }
 
+
+  async _updateVehicle(form) {
+    if (!this._hass || !form) return;
+    const vehicleKey = form.dataset.vehicle || "";
+    const data = new FormData(form);
+    const payload = {
+      vehicle_id: vehicleKey,
+      name: String(data.get("name") || "").trim(),
+      license_plate: String(data.get("license_plate") || "").trim().toUpperCase(),
+      vin: String(data.get("vin") || "").trim().toUpperCase(),
+      km: Number(data.get("km") || 0),
+      registration_country: String(data.get("registration_country") || "").trim(),
+      registration_certificate: String(data.get("registration_certificate") || "").trim().toUpperCase(),
+    };
+
+    if (!payload.vehicle_id) {
+      this._vehicleEditMessage[vehicleKey] = "Nu am putut identifica autovehiculul pentru editare.";
+      this._render(true);
+      return;
+    }
+    if (!payload.name) {
+      this._vehicleEditMessage[vehicleKey] = "Numele autovehiculului este obligatoriu.";
+      this._render(true);
+      return;
+    }
+
+    this._vehicleEditBusy = vehicleKey;
+    this._vehicleEditMessage[vehicleKey] = "Se salvează modificările autovehiculului...";
+    this._render(true);
+
+    try {
+      await this._hass.callService("car_manager_romania", "edit_vehicle", payload);
+      // Actualizare optimistă în panel: utilizatorul vede imediat numele/VIN/numărul nou,
+      // fără să aștepte refresh-ul complet al entităților Home Assistant.
+      this._vehicleLocalOverrides[vehicleKey] = {
+        ...(this._vehicleLocalOverrides[vehicleKey] || {}),
+        name: payload.name,
+        license_plate: payload.license_plate,
+        vin: payload.vin,
+        km: payload.km,
+        current_km: payload.km,
+        registration_country: payload.registration_country,
+        registration_certificate: payload.registration_certificate,
+      };
+      this._vehicleEditMessage[vehicleKey] = "Datele autovehiculului au fost actualizate.";
+      this._vehicleEditOpen.delete(vehicleKey);
+      delete this._vehicleEditDrafts[vehicleKey];
+    } catch (error) {
+      this._vehicleEditMessage[vehicleKey] = error?.message || "Nu am putut salva modificările autovehiculului.";
+    } finally {
+      this._vehicleEditBusy = null;
+      this._lastSignature = "";
+      this._render(true);
+    }
+  }
+
+
   async _addServiceRecord(form) {
     if (!this._hass || !form || this._serviceRecordBusy) return;
     const vehicleKey = form.dataset.vehicle;
@@ -4372,15 +4712,24 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _scrollActiveTabIntoView() {
     const activeTab = this.shadowRoot?.querySelector(".cmr-tab.active");
-    if (!activeTab) return;
+    const tabs = this.shadowRoot?.querySelector(".cmr-tabs");
+    if (!activeTab || !tabs) return;
     window.requestAnimationFrame(() => {
-      activeTab.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+      const tabRect = activeTab.getBoundingClientRect();
+      const tabsRect = tabs.getBoundingClientRect();
+      const overflowLeft = tabRect.left < tabsRect.left + 6;
+      const overflowRight = tabRect.right > tabsRect.right - 6;
+      if (!overflowLeft && !overflowRight) return;
+      const delta = (tabRect.left + tabRect.width / 2) - (tabsRect.left + tabsRect.width / 2);
+      // Fără smooth aici: pe mobil evita jitter-ul stânga-dreapta după apăsarea taburilor.
+      tabs.scrollBy({ left: delta, behavior: "auto" });
     });
   }
 
   _attachEvents() {
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
         const next = button.dataset.tab;
         if (!next) return;
         if (button.dataset.vehicle) {
@@ -4406,6 +4755,33 @@ class CarManagerRomaniaPanel extends HTMLElement {
         this._savePreference("vehicle_filter", this._vehicleFilter);
         this._lastSignature = "";
         this._render(true);
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("[data-action='toggle-vehicle-edit']").forEach((button) => {
+      button.addEventListener("click", () => {
+        const vehicleKey = button.dataset.vehicle;
+        if (!vehicleKey) return;
+        if (this._vehicleEditOpen.has(vehicleKey)) this._vehicleEditOpen.delete(vehicleKey);
+        else this._vehicleEditOpen.add(vehicleKey);
+        this._render(true);
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("[data-action='cancel-vehicle-edit']").forEach((button) => {
+      button.addEventListener("click", () => {
+        const vehicleKey = button.dataset.vehicle;
+        if (!vehicleKey) return;
+        this._vehicleEditOpen.delete(vehicleKey);
+        delete this._vehicleEditDrafts[vehicleKey];
+        this._render(true);
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("form[data-form='vehicle-edit']").forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        this._updateVehicle(form);
       });
     });
 
@@ -4711,6 +5087,14 @@ class CarManagerRomaniaPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll("[data-action='rovinieta-scan-import']").forEach((button) => {
+      button.addEventListener("click", () => this._scanRovinietaImportVehicles());
+    });
+
+    this.shadowRoot.querySelectorAll("[data-action='rovinieta-import-vehicle']").forEach((button) => {
+      button.addEventListener("click", () => this._importRovinietaVehicle(button.dataset.importKey));
+    });
+
     this.shadowRoot.querySelectorAll("form[data-form='notification-options']").forEach((form) => {
       form.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -4793,7 +5177,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
       .cmr-vehicle-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.cmr-vehicle-card,.cmr-stat-card{background:#fafeff;border:1px solid rgba(15,63,94,.09);border-radius:24px;padding:18px}.cmr-vehicle-card header,.cmr-stat-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}.cmr-vehicle-card h3,.cmr-stat-head h3{margin:0;font-size:21px}.cmr-stat-head span{display:block;color:#6b7f98;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.12em}.cmr-stat-head small{display:block;color:#66788f;font-weight:700;margin-top:2px}.cmr-vehicle-card header span{color:#66788f;font-weight:700}.cmr-stat-head-meta{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.cmr-stat-head-meta span{background:#eafaff;border:1px solid rgba(6,166,199,.15);border-radius:999px;padding:6px 9px;color:#0a5b76;font-size:11px;letter-spacing:0;text-transform:none}.cmr-vehicle-card button{border:0;background:#ddf7fc;color:#0a5b76;border-radius:14px;padding:9px 14px;font-weight:900;cursor:pointer}.cmr-mini-grid,.cmr-metrics-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-metrics-row{grid-template-columns:repeat(6,minmax(0,1fr));margin-bottom:18px}.cmr-mini-grid div,.cmr-metrics-row div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-mini-grid span,.cmr-metrics-row span{display:block;color:#66788f;font-size:12px;font-weight:900}.cmr-mini-grid strong,.cmr-metrics-row strong{display:block;margin-top:6px;font-size:17px}
       .cmr-stack{display:grid;gap:20px}.cmr-pill{background:#e8fbf0;color:#13784c;border-radius:999px;padding:7px 12px;font-weight:900}.cmr-chart-card{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:20px;padding:16px;margin-top:14px;overflow:hidden}.cmr-chart-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}.cmr-chart-title strong{font-size:16px}.cmr-chart-title span{font-size:12px;color:#64768f;font-weight:850}.cmr-chart{width:100%;height:280px;display:block}.cmr-chart .grid{stroke:rgba(93,124,146,.16);stroke-width:1;stroke-dasharray:7 9}.cmr-chart .tick,.cmr-chart .x-label{fill:#5f7188;font-size:12px;font-weight:800}.cmr-chart .area{fill:rgba(28,184,210,.16)}.cmr-chart .line{fill:none;stroke:#08a5c9;stroke-width:3;vector-effect:non-scaling-stroke}.cmr-chart .chart-point{cursor:pointer}.cmr-chart .hit{fill:transparent;stroke:transparent;pointer-events:all}.cmr-chart .dot{fill:#08a5c9;stroke:#fff;stroke-width:2;vector-effect:non-scaling-stroke;pointer-events:none}.cmr-chart .chart-point:hover .dot{fill:#0b5b82}
       .cmr-bars{height:280px;display:grid;grid-template-columns:repeat(var(--count),minmax(44px,120px));align-items:end;justify-content:center;gap:22px;border-radius:16px;background:linear-gradient(180deg,rgba(12,166,199,.04),rgba(12,166,199,.01));padding:22px 18px 36px;position:relative}.cmr-bar-wrap{height:100%;display:flex;align-items:end;justify-content:end;flex-direction:column;gap:8px}.cmr-bar{width:54px;max-width:100%;border-radius:14px 14px 8px 8px;background:linear-gradient(180deg,#29bed1,#0a88a8);box-shadow:0 10px 24px rgba(8,152,184,.24);cursor:pointer}.cmr-bar-wrap span{font-size:12px;color:#64768f;font-weight:850}.cmr-stat-footnote{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:14px;color:#66788f;font-size:12px;font-weight:800}.cmr-stat-footnote span{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:999px;padding:7px 10px}
-      .cmr-empty,.cmr-settings-page{display:grid;gap:20px}.cmr-settings-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-settings-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-settings-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-settings-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-settings-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-settings-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:22px;letter-spacing:-.03em;overflow-wrap:anywhere}.cmr-settings-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.cmr-settings-card{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:22px;box-shadow:0 14px 34px rgba(8,52,79,.05)}.cmr-settings-card-head{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;margin-bottom:16px}.cmr-settings-card-head>ha-icon{width:44px;height:44px;color:#06a6c7;background:#e9faff;border-radius:16px;padding:10px;box-sizing:border-box}.cmr-settings-card-head span{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:950;color:#64768f}.cmr-settings-card-head h3{margin:3px 0 4px;color:#001d3f;font-size:22px}.cmr-settings-card-head p{margin:0;color:#36506b;font-weight:750}.cmr-settings-checks{display:grid;gap:10px}.cmr-settings-checks label{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center;background:#f7fcfe;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px}.cmr-settings-checks input{width:20px;height:20px;accent-color:#06a6c7}.cmr-settings-checks strong{display:block;color:#001d3f}.cmr-settings-checks small{display:block;color:#64768f;font-weight:750;margin-top:2px}.cmr-settings-actions{display:flex;gap:10px;align-items:center;margin-top:14px}.cmr-settings-actions.wrap{flex-wrap:wrap}.cmr-settings-actions button,.cmr-settings-shortcuts button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:950;padding:10px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}.cmr-settings-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-settings-actions button.danger{background:#ffe6ea;color:#8a2030}.cmr-settings-actions button:disabled{opacity:.6;cursor:not-allowed}.cmr-settings-field{display:grid;gap:7px;color:#566b84;font-weight:900}.cmr-settings-field input{width:100%;box-sizing:border-box;border:1px solid rgba(15,63,94,.14);border-radius:14px;padding:12px 13px;background:#fff;color:#001d3f;font:inherit;font-weight:800}.cmr-settings-note{color:#51627a;font-weight:750;margin:12px 0 0}.cmr-settings-message{margin-top:12px;background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:14px;padding:12px 14px;color:#22566d;font-weight:850}.cmr-settings-shortcuts{display:flex;flex-wrap:wrap;gap:10px}.cmr-settings-shortcuts ha-icon{width:18px;height:18px}.cmr-settings-steps{display:grid;gap:10px}.cmr-settings-steps div{display:grid;grid-template-columns:38px minmax(0,1fr);gap:12px;align-items:center;background:#f7fcfe;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px}.cmr-settings-steps strong{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:#071a33;color:#fff}.cmr-settings-steps span{color:#253e5a;font-weight:800}.cmr-settings-steps code{background:#eef8fb;border-radius:8px;padding:2px 6px}.cmr-license-page{display:grid;gap:20px}.cmr-license-status-card{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:18px;align-items:center;background:#eefaff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:22px;border-top:4px solid #64768f}.cmr-license-status-card.is-good{border-top-color:#20a66c}.cmr-license-status-card.is-bad{border-top-color:#e64a2e}.cmr-license-status-card.is-warn{border-top-color:#f1a51d}.cmr-license-status-icon{width:72px;height:72px;border-radius:22px;background:#071a33;color:#fff;display:grid;place-items:center;box-shadow:0 14px 32px rgba(7,26,51,.24)}.cmr-license-status-icon ha-icon{width:34px;height:34px}.cmr-license-status-card span{text-transform:uppercase;letter-spacing:.14em;font-size:12px;font-weight:950;color:#64768f}.cmr-license-status-card h3{margin:4px 0 0;font-size:30px;letter-spacing:-.04em;color:#001d3f}.cmr-license-status-card p{margin:5px 0 0;color:#36506b;font-weight:750}.cmr-license-status-pill{border-radius:999px;background:#fff;color:#001d3f;font-weight:950;padding:10px 14px;border:1px solid rgba(15,63,94,.08);white-space:nowrap}.cmr-license-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.cmr-license-info-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:20px;padding:16px;box-shadow:0 12px 32px rgba(8,52,79,.05)}.cmr-license-info-tile ha-icon{width:26px;height:26px;color:#06a6c7}.cmr-license-info-tile span{display:block;margin-top:8px;color:#64768f;font-size:12px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-license-info-tile strong{display:block;margin-top:6px;color:#001d3f;font-size:18px;overflow-wrap:anywhere}.cmr-license-section{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:22px;box-shadow:0 14px 34px rgba(8,52,79,.05)}.cmr-license-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}.cmr-license-form input{width:100%;box-sizing:border-box;border:1px solid rgba(15,63,94,.14);border-radius:14px;padding:13px 14px;background:#fff;color:#001d3f;font:inherit;font-weight:800}.cmr-license-form button,.cmr-license-action-row button{border:0;border-radius:999px;background:#071a33;color:#fff;font-weight:950;padding:13px 18px;cursor:pointer;box-shadow:0 14px 28px rgba(7,26,51,.18);display:inline-flex;align-items:center;gap:8px}.cmr-license-form button:disabled,.cmr-license-action-row button:disabled{opacity:.6;cursor:not-allowed}.cmr-license-action-row button ha-icon{width:20px;height:20px}.cmr-license-help{margin:12px 0 0;color:#51627a;font-weight:750}.cmr-license-message{margin-top:12px;background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:14px;padding:12px 14px;color:#22566d;font-weight:850}.cmr-license-message.warn{background:#fff7df;border-color:rgba(241,165,29,.25);color:#845d00}.cmr-license-action-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:20px;background:#f7fbfd;border:1px solid rgba(15,63,94,.06);border-radius:22px;padding:18px}.cmr-license-action-row h3{margin:0 0 5px;font-size:20px;color:#001d3f}.cmr-license-action-row p{margin:0;color:#36506b;font-weight:750}.cmr-license-support{display:grid;grid-template-columns:58px minmax(0,1fr);gap:18px;background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:22px;box-shadow:0 16px 36px rgba(8,52,79,.06)}.cmr-license-support-icon{width:54px;height:54px;border-radius:50%;background:#fff;display:grid;place-items:center;color:#071a33;box-shadow:0 14px 28px rgba(7,26,51,.10)}.cmr-license-support-icon ha-icon{width:28px;height:28px}.cmr-license-support h3{margin:0 0 8px;font-size:22px;color:#001d3f}.cmr-license-support p{margin:8px 0;color:#253e5a;font-weight:750}.cmr-license-support a{display:inline-flex;align-items:center;gap:8px;margin-top:10px;background:#ffdd00;color:#001d3f;border-radius:999px;padding:12px 18px;text-decoration:none;font-weight:950;box-shadow:0 14px 28px rgba(255,221,0,.22)}.cmr-license-support small{display:block;margin-top:10px;color:#51627a;font-weight:750}.cmr-battery-page{display:grid;gap:20px}.cmr-battery-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-battery-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-battery-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-battery-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-battery-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-battery-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-battery-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-battery-vehicles{display:grid;gap:18px}.cmr-battery-vehicle-card{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-battery-vehicle-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.cmr-battery-vehicle-card h3{margin:0;font-size:24px}.cmr-battery-vehicle-card header span{display:block;color:#64768f;font-weight:800}.cmr-battery-vehicle-card header button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-battery-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-battery-metrics div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-battery-metrics span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-battery-metrics strong{display:block;margin-top:5px;color:#001d3f;font-size:17px}.cmr-battery-metrics small{display:block;margin-top:4px;color:#64768f;font-weight:750}.cmr-battery-form{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:18px;padding:14px;margin:14px 0}.cmr-battery-form-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.cmr-battery-form-grid label{display:grid;gap:6px}.cmr-battery-form-grid label.wide{grid-column:span 5}.cmr-battery-form-grid span,.cmr-battery-check{color:#566b84;font-size:12px;font-weight:900}.cmr-battery-form-grid input,.cmr-battery-form-grid select,.cmr-battery-form-grid textarea{width:100%;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-battery-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-battery-form-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-battery-form-actions button,.cmr-battery-item-side button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-battery-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-battery-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin:10px 0}.cmr-battery-list{margin-top:16px}.cmr-battery-section-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}.cmr-battery-section-title strong{font-size:17px}.cmr-battery-section-title span{color:#64768f;font-weight:800}.cmr-battery-item{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;margin-bottom:10px}.cmr-battery-item.is-installed{border-left:4px solid #1fa971}.cmr-battery-item.has-alert{border-left-color:#e64a2e}.cmr-battery-item-main strong{display:block;color:#001d3f}.cmr-battery-item-main em{font-style:normal;background:#ffece6;border-radius:999px;padding:3px 7px;font-size:11px;color:#ba321e}.cmr-battery-item-main span{display:block;color:#64768f;font-weight:800;margin-top:4px}.cmr-battery-item-main p{margin:8px 0 0;color:#3d4f66}.cmr-battery-item-side{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.cmr-battery-item-side b{font-size:18px;color:#001d3f}.cmr-battery-item-side button.danger{background:#ffe6ea;color:#8a2030}.cmr-equipment-page{display:grid;gap:20px}.cmr-equipment-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-equipment-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-equipment-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-equipment-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-equipment-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-equipment-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-equipment-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-equipment-vehicles{display:grid;gap:18px}.cmr-equipment-vehicle-card{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-equipment-vehicle-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.cmr-equipment-vehicle-card h3{margin:0;font-size:24px}.cmr-equipment-vehicle-card header span{display:block;color:#64768f;font-weight:800}.cmr-equipment-vehicle-card header button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-equipment-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-equipment-metrics div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-equipment-metrics span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-equipment-metrics strong{display:block;margin-top:5px;color:#001d3f;font-size:17px}.cmr-equipment-metrics small{display:block;margin-top:4px;color:#64768f;font-weight:750}.cmr-equipment-form{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:18px;padding:14px;margin:14px 0}.cmr-equipment-form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.cmr-equipment-form-grid label{display:grid;gap:6px}.cmr-equipment-form-grid label.wide{grid-column:span 3}.cmr-equipment-form-grid span,.cmr-equipment-check{color:#566b84;font-size:12px;font-weight:900}.cmr-equipment-form-grid input,.cmr-equipment-form-grid select,.cmr-equipment-form-grid textarea{width:100%;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-equipment-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-equipment-form-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-equipment-form-actions button,.cmr-equipment-item-side button,.cmr-equipment-required-card button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-equipment-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-equipment-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin:10px 0}.cmr-equipment-block{margin-top:16px}.cmr-equipment-section-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}.cmr-equipment-section-title strong{font-size:17px}.cmr-equipment-section-title span{color:#64768f;font-weight:800}.cmr-equipment-required-grid,.cmr-equipment-list{display:grid;gap:10px}.cmr-equipment-required-card{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-equipment-required-card div{display:flex;justify-content:space-between;gap:10px}.cmr-equipment-required-card strong{color:#001d3f}.cmr-equipment-required-card span{font-weight:900;color:#a66d00}.cmr-equipment-required-card p{color:#64768f;font-weight:750;margin:8px 0}.cmr-equipment-required-card footer{display:flex;flex-wrap:wrap;gap:8px}.cmr-equipment-required-card button.danger,.cmr-equipment-item-side button.danger{background:#ffe6ea;color:#8a2030}.cmr-equipment-required-card.is-ignored{opacity:.78}.cmr-equipment-item{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px}.cmr-equipment-item.critical{border-left:4px solid #e64a2e}.cmr-equipment-item.warning{border-left:4px solid #f1a51d}.cmr-equipment-item.ok{border-left:4px solid #1fa971}.cmr-equipment-item-main strong{display:block;color:#001d3f}.cmr-equipment-item-main em{font-style:normal;background:#ffece6;border-radius:999px;padding:3px 7px;font-size:11px;color:#ba321e}.cmr-equipment-item-main span{display:block;color:#64768f;font-weight:800;margin-top:4px}.cmr-equipment-item-main p{margin:8px 0 0;color:#3d4f66}.cmr-equipment-item-side{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.cmr-equipment-item-side b{font-size:18px;color:#001d3f}.cmr-tires-page{display:grid;gap:20px}.cmr-tires-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-tire-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-tire-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-tire-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-tire-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-tire-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-tire-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-tire-vehicles{display:grid;gap:18px}.cmr-tire-vehicle-card{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-tire-vehicle-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.cmr-tire-vehicle-card h3{margin:0;font-size:24px}.cmr-tire-vehicle-card header span{display:block;color:#64768f;font-weight:800}.cmr-tire-vehicle-card header button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-tire-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-tire-metrics div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-tire-metrics span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-tire-metrics strong{display:block;margin-top:5px;color:#001d3f;font-size:17px}.cmr-tire-metrics small{display:block;margin-top:4px;color:#64768f;font-weight:750}.cmr-tire-form{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:18px;padding:14px;margin:14px 0}.cmr-tire-form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-tire-form-grid label{display:grid;gap:6px}.cmr-tire-form-grid label.wide{grid-column:span 4}.cmr-tire-form-grid span,.cmr-tire-check{color:#566b84;font-size:12px;font-weight:900}.cmr-tire-form-grid input,.cmr-tire-form-grid select,.cmr-tire-form-grid textarea{width:100%;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-tire-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-tire-form-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-tire-form-actions button,.cmr-tire-set-side button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-tire-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-tire-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin:10px 0}.cmr-tire-list{margin-top:16px}.cmr-tire-section-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}.cmr-tire-section-title strong{font-size:17px}.cmr-tire-section-title span{color:#64768f;font-weight:800}.cmr-tire-set{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;margin-bottom:10px}.cmr-tire-set.is-mounted{border-left:4px solid #1fa971}.cmr-tire-set-main strong{display:block;color:#001d3f}.cmr-tire-set-main em{font-style:normal;background:#e8fbf0;border-radius:999px;padding:3px 7px;font-size:11px;color:#13784c}.cmr-tire-set-main span{display:block;color:#64768f;font-weight:800;margin-top:4px}.cmr-tire-set-details{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.cmr-tire-set-details small{background:#eef8fb;border-radius:999px;padding:5px 8px;color:#51627a;font-weight:800}.cmr-tire-set-main p{margin:8px 0 0;color:#3d4f66}.cmr-tire-set-side{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.cmr-tire-set-side b{font-size:18px;color:#001d3f}.cmr-tire-set-side button.danger{background:#ffe6ea;color:#8a2030}.cmr-fuel-page{display:grid;gap:20px}.cmr-fuel-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:22px;padding:16px 18px}.cmr-fuel-toolbar strong{display:block;font-size:18px}.cmr-fuel-toolbar span{display:block;color:#64768f;font-weight:750}.cmr-fuel-controls{display:flex;align-items:end;gap:10px;flex-wrap:wrap}.cmr-fuel-controls label{display:grid;gap:6px;color:#64768f;font-weight:900;font-size:12px}.cmr-fuel-controls select{min-width:190px;border:1px solid rgba(15,63,94,.12);border-radius:14px;background:#fff;padding:10px 12px;font-weight:900}.cmr-fuel-controls button,.cmr-fuel-vehicle-card header button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-fuel-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-fuel-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-fuel-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-fuel-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-fuel-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-fuel-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-fuel-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-fuel-vehicles{display:grid;gap:18px}.cmr-fuel-vehicle-card{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-fuel-vehicle-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.cmr-fuel-vehicle-card h3{margin:0;font-size:24px}.cmr-fuel-vehicle-card header span{display:block;color:#64768f;font-weight:800}.cmr-fuel-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.cmr-fuel-metrics div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-fuel-metrics span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-fuel-metrics strong{display:block;margin-top:5px;color:#001d3f;font-size:17px}.cmr-fuel-metrics small{display:block;margin-top:4px;color:#64768f;font-weight:750}.cmr-fuel-form{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:18px;padding:14px;margin:14px 0}.cmr-fuel-form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.cmr-fuel-form-grid label{display:grid;gap:6px}.cmr-fuel-form-grid label.wide{grid-column:span 3}.cmr-fuel-form-grid span,.cmr-fuel-check{color:#566b84;font-size:12px;font-weight:900}.cmr-fuel-form-grid input,.cmr-fuel-form-grid select,.cmr-fuel-form-grid textarea{width:100%;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-fuel-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-fuel-form-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-fuel-form-actions button,.cmr-fuel-receipt-actions button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-fuel-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-fuel-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin:10px 0}.cmr-fuel-history{margin-top:16px}.cmr-fuel-section-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}.cmr-fuel-section-title strong{font-size:17px}.cmr-fuel-section-title span{color:#64768f;font-weight:800}.cmr-fuel-receipt{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;margin-bottom:10px}.cmr-fuel-receipt-main strong{display:block;color:#001d3f}.cmr-fuel-receipt-main span{display:block;color:#64768f;font-weight:800;margin-top:4px}.cmr-fuel-receipt-main b{display:block;color:#001d3f;font-size:18px;margin-top:7px}.cmr-fuel-receipt-main p{margin:8px 0 0;color:#3d4f66}.cmr-fuel-receipt-actions{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.cmr-fuel-receipt-actions button.danger{background:#ffe6ea;color:#8a2030}.cmr-costs-page{display:grid;gap:20px}.cmr-costs-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-cost-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-cost-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-cost-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-cost-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-cost-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-cost-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-costs-section{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px}.cmr-cost-vehicle-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:14px;align-items:start}.cmr-cost-vehicle-card{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:20px;padding:16px;box-shadow:0 12px 30px rgba(8,52,79,.05)}.cmr-cost-vehicle-card header{display:grid;grid-template-columns:minmax(0,1fr);align-items:flex-start;gap:8px;margin-bottom:12px;min-width:0}.cmr-cost-vehicle-card h4{margin:0;font-size:20px}.cmr-cost-vehicle-card header span{display:block;color:#64768f;font-weight:800;margin-top:2px}.cmr-cost-vehicle-card header strong{font-size:20px;color:#001d3f;max-width:100%;white-space:normal;overflow-wrap:anywhere}.cmr-cost-mini-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.cmr-cost-mini-grid div{background:#f7fcfe;border:1px solid rgba(15,63,94,.08);border-radius:14px;padding:11px}.cmr-cost-mini-grid span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-cost-mini-grid strong{display:block;margin-top:5px;color:#001d3f;font-size:15px}.cmr-costs-two{display:grid;grid-template-columns:1fr 1fr;gap:18px}.cmr-section-head.compact{margin-bottom:10px}.cmr-cost-type-list{display:grid;gap:10px}.cmr-cost-type-bar{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px}.cmr-cost-type-bar div{display:flex;justify-content:space-between;gap:12px;align-items:center}.cmr-cost-type-bar strong{color:#001d3f}.cmr-cost-type-bar span{color:#001d3f;font-weight:950}.cmr-cost-type-bar i{display:block;height:10px;border-radius:999px;background:#e8f7fb;overflow:hidden;margin-top:10px}.cmr-cost-type-bar b{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#5ed3e5,#0499bd)}.cmr-upcoming-costs{display:grid;gap:10px}.cmr-upcoming-cost{display:flex;justify-content:space-between;gap:14px;align-items:center;background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px 15px}.cmr-upcoming-cost span{display:block;color:#64768f;font-weight:800;margin-top:3px}.cmr-upcoming-cost>strong{font-size:18px;color:#001d3f;white-space:nowrap}.cmr-vehicles-page{display:grid;gap:20px}.cmr-vehicles-hero{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.cmr-vehicles-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:22px;padding:16px 18px}.cmr-vehicles-toolbar strong{display:block;font-size:18px}.cmr-vehicles-toolbar span{display:block;color:#64768f;font-weight:750;margin-top:2px}.cmr-toolbar-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-toolbar-actions button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-vehicles-list{display:grid;gap:18px}.cmr-admin-vehicle-card{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-admin-vehicle-card.is-critical{border-top:4px solid #e64a2e}.cmr-admin-vehicle-card.is-warning{border-top:4px solid #f1a51d}.cmr-admin-vehicle-card.is-ok{border-top:4px solid #20a66c}.cmr-admin-vehicle-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}.cmr-admin-vehicle-head span{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:950;color:#657991}.cmr-admin-vehicle-head h3{margin:3px 0 2px;font-size:26px;letter-spacing:-.03em}.cmr-admin-vehicle-head small{color:#5e7088;font-weight:800}.cmr-admin-status{text-align:right}.cmr-admin-status strong{display:inline-flex;border-radius:999px;padding:7px 11px;background:#e8fbf0;color:#13784c}.cmr-admin-vehicle-card.is-critical .cmr-admin-status strong{background:#ffece6;color:#ba321e}.cmr-admin-vehicle-card.is-warning .cmr-admin-status strong{background:#fff5d8;color:#9a6200}.cmr-admin-status span{display:block;margin-top:5px;text-transform:none;letter-spacing:0;color:#64768f}.cmr-admin-profile-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:14px}.cmr-admin-info-tile{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px;min-width:0}.cmr-admin-info-tile ha-icon{width:22px;height:22px;color:#06a6c7}.cmr-admin-info-tile span{display:block;margin-top:7px;color:#64768f;font-size:12px;font-weight:900}.cmr-admin-info-tile strong{display:block;margin-top:4px;font-size:16px;color:#001d3f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cmr-admin-table{display:grid;gap:0;background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;overflow:hidden}.cmr-admin-row{display:grid;grid-template-columns:minmax(140px,1.1fr) minmax(120px,.9fr) minmax(120px,.8fr);gap:12px;align-items:center;padding:11px 13px;border-bottom:1px solid rgba(15,63,94,.08)}.cmr-admin-row:last-child{border-bottom:0}.cmr-admin-row strong{color:#001d3f}.cmr-admin-row span{font-weight:900;color:#001d3f}.cmr-admin-row small{color:#64768f;font-weight:800}.cmr-admin-row.ok span{color:#128451}.cmr-admin-row.warning span{color:#a66d00}.cmr-admin-row.critical span{color:#d33a21}.cmr-admin-section-title button{margin-left:auto;border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-admin-history{display:grid;gap:10px}.cmr-admin-history-record{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0;overflow:hidden}.cmr-admin-history-record.is-restored{opacity:.78}.cmr-admin-history-record em{font-style:normal;background:#eef8fb;border-radius:999px;padding:3px 7px;font-size:11px;color:#51627a}.cmr-admin-history-actions{display:flex;flex-direction:row;gap:8px;align-items:flex-start;justify-content:flex-start;flex-wrap:wrap;min-width:0;max-width:100%}.cmr-admin-history-actions button,.cmr-admin-form-actions button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-admin-history-actions button.danger{background:#ffe6ea;color:#8a2030}.cmr-admin-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-admin-service-form{background:#f7fcfe;border:1px solid rgba(15,63,94,.09);border-radius:16px;padding:14px;margin:10px 0}.cmr-admin-form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-admin-form-grid label{display:grid;gap:6px}.cmr-admin-form-grid label.wide{grid-column:span 2}.cmr-admin-form-grid span,.cmr-admin-check{color:#566b84;font-size:12px;font-weight:900}.cmr-admin-form-grid input,.cmr-admin-form-grid select,.cmr-admin-form-grid textarea{width:100%;box-sizing:border-box;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-admin-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-admin-form-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}.cmr-admin-help,.cmr-admin-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin-bottom:10px}.cmr-admin-history-main{min-width:0;max-width:100%;overflow:hidden}.cmr-admin-history-record strong{display:block;color:#001d3f;max-width:100%;white-space:normal;overflow-wrap:anywhere}.cmr-admin-history-record span{display:block;color:#64768f;font-weight:800;margin-top:4px;max-width:100%;white-space:normal;overflow-wrap:anywhere}.cmr-admin-history-record p{margin:8px 0 0;color:#3d4f66;white-space:pre-line;max-width:100%;overflow-wrap:anywhere}.cmr-admin-sections{display:grid;gap:12px}.cmr-admin-sections section{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:18px;padding:14px}.cmr-admin-section-title{display:flex;align-items:center;gap:8px;margin-bottom:10px;color:#001d3f}.cmr-admin-section-title ha-icon{width:20px;height:20px;color:#06a6c7}.cmr-admin-chip-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-admin-chip-grid.one{grid-template-columns:1fr}.cmr-admin-empty{border:1px dashed rgba(15,63,94,.18);border-radius:16px;padding:12px 14px;color:#64768f;background:#fff}.cmr-admin-alerts{display:flex;flex-wrap:wrap;gap:8px}.cmr-admin-alerts span{border-radius:999px;padding:7px 10px;font-size:12px;font-weight:900;background:#fff5d8;color:#9a6200}.cmr-admin-alerts span.critical{background:#ffece6;color:#ba321e}.cmr-admin-ok{display:flex;align-items:center;gap:8px;color:#168455;font-weight:850}.cmr-admin-ok ha-icon{width:18px;height:18px}.cmr-admin-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}.cmr-admin-actions button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-placeholder{background:#f7fcfe;border:1px dashed rgba(15,63,94,.18);border-radius:22px;padding:28px;text-align:center;color:#60748d}.cmr-placeholder ha-icon{width:42px;height:42px;color:#0aa5c6}.cmr-placeholder strong{display:block;font-size:20px;color:#10233f;margin-top:12px}.cmr-chart-card.empty{text-align:center;color:#64768f}
+      .cmr-empty,.cmr-settings-page{display:grid;gap:20px}.cmr-settings-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-settings-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-settings-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-settings-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-settings-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-settings-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:22px;letter-spacing:-.03em;overflow-wrap:anywhere}.cmr-settings-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.cmr-settings-card{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:22px;box-shadow:0 14px 34px rgba(8,52,79,.05)}.cmr-settings-card-head{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;margin-bottom:16px}.cmr-settings-card-head>ha-icon{width:44px;height:44px;color:#06a6c7;background:#e9faff;border-radius:16px;padding:10px;box-sizing:border-box}.cmr-settings-card-head span{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:950;color:#64768f}.cmr-settings-card-head h3{margin:3px 0 4px;color:#001d3f;font-size:22px}.cmr-settings-card-head p{margin:0;color:#36506b;font-weight:750}.cmr-settings-checks{display:grid;gap:10px}.cmr-settings-checks label{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center;background:#f7fcfe;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px}.cmr-settings-checks input{width:20px;height:20px;accent-color:#06a6c7}.cmr-settings-checks strong{display:block;color:#001d3f}.cmr-settings-checks small{display:block;color:#64768f;font-weight:750;margin-top:2px}.cmr-settings-actions{display:flex;gap:10px;align-items:center;margin-top:14px}.cmr-settings-actions.wrap{flex-wrap:wrap}.cmr-settings-actions button,.cmr-settings-shortcuts button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:950;padding:10px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}.cmr-settings-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-settings-actions button.danger{background:#ffe6ea;color:#8a2030}.cmr-settings-actions button:disabled{opacity:.6;cursor:not-allowed}.cmr-settings-field{display:grid;gap:7px;color:#566b84;font-weight:900}.cmr-settings-field input,.cmr-settings-field select{width:100%;box-sizing:border-box;border:1px solid rgba(15,63,94,.14);border-radius:14px;padding:12px 13px;background:#fff;color:#001d3f;font:inherit;font-weight:800}.cmr-settings-note{color:#51627a;font-weight:750;margin:12px 0 0}.cmr-rovinieta-account-status{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center;background:#f7fcfe;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px 14px;margin:0 0 14px}.cmr-rovinieta-account-status.is-configured{background:#ecfff7;border-color:rgba(32,166,108,.22)}.cmr-rovinieta-account-status.is-empty{background:#fff9ec;border-color:rgba(241,165,29,.24)}.cmr-rovinieta-account-status ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-rovinieta-account-status.is-configured ha-icon{color:#20a66c}.cmr-rovinieta-account-status.is-empty ha-icon{color:#c47a00}.cmr-rovinieta-account-status strong{display:block;color:#001d3f;font-size:15px;overflow-wrap:anywhere}.cmr-rovinieta-account-status small{display:block;color:#51627a;font-weight:750;margin-top:3px}.cmr-settings-message{margin-top:12px;background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:14px;padding:12px 14px;color:#22566d;font-weight:850}.cmr-rovinieta-import-block{margin-top:18px;border-top:1px solid rgba(15,63,94,.08);padding-top:16px}.cmr-rovinieta-import-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:start}.cmr-rovinieta-import-head span{text-transform:uppercase;letter-spacing:.12em;font-size:11px;font-weight:950;color:#64768f}.cmr-rovinieta-import-head h4{margin:3px 0 4px;color:#001d3f;font-size:18px}.cmr-rovinieta-import-head p{margin:0;color:#51627a;font-weight:750}.cmr-rovinieta-import-head button,.cmr-rovinieta-import-footer button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:950;padding:10px 14px;cursor:pointer}.cmr-rovinieta-import-head button:disabled,.cmr-rovinieta-import-footer button:disabled{opacity:.6;cursor:not-allowed}.cmr-rovinieta-import-list{display:grid;gap:12px;margin-top:12px}.cmr-rovinieta-import-item{background:#f7fcfe;border:1px solid rgba(15,63,94,.08);border-radius:18px;padding:14px}.cmr-rovinieta-import-item.is-existing{background:#f9fbfc}.cmr-rovinieta-import-item>div:first-child{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.cmr-rovinieta-import-item strong{color:#001d3f;font-size:18px}.cmr-rovinieta-import-item span{color:#64768f;font-weight:850}.cmr-rovinieta-import-item dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0 0}.cmr-rovinieta-import-item dl div{background:#fff;border:1px solid rgba(15,63,94,.07);border-radius:12px;padding:9px}.cmr-rovinieta-import-item dt{color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.05em}.cmr-rovinieta-import-item dd{margin:3px 0 0;color:#001d3f;font-weight:900;overflow-wrap:anywhere}.cmr-rovinieta-import-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}.cmr-rovinieta-import-footer .secondary{background:#eef6f9;color:#4c6278}.cmr-settings-shortcuts{display:flex;flex-wrap:wrap;gap:10px}.cmr-settings-shortcuts ha-icon{width:18px;height:18px}.cmr-settings-steps{display:grid;gap:10px}.cmr-settings-steps div{display:grid;grid-template-columns:38px minmax(0,1fr);gap:12px;align-items:center;background:#f7fcfe;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px}.cmr-settings-steps strong{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:#071a33;color:#fff}.cmr-settings-steps span{color:#253e5a;font-weight:800}.cmr-settings-steps code{background:#eef8fb;border-radius:8px;padding:2px 6px}.cmr-license-page{display:grid;gap:20px}.cmr-license-status-card{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:18px;align-items:center;background:#eefaff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:22px;border-top:4px solid #64768f}.cmr-license-status-card.is-good{border-top-color:#20a66c}.cmr-license-status-card.is-bad{border-top-color:#e64a2e}.cmr-license-status-card.is-warn{border-top-color:#f1a51d}.cmr-license-status-icon{width:72px;height:72px;border-radius:22px;background:#071a33;color:#fff;display:grid;place-items:center;box-shadow:0 14px 32px rgba(7,26,51,.24)}.cmr-license-status-icon ha-icon{width:34px;height:34px}.cmr-license-status-card span{text-transform:uppercase;letter-spacing:.14em;font-size:12px;font-weight:950;color:#64768f}.cmr-license-status-card h3{margin:4px 0 0;font-size:30px;letter-spacing:-.04em;color:#001d3f}.cmr-license-status-card p{margin:5px 0 0;color:#36506b;font-weight:750}.cmr-license-status-pill{border-radius:999px;background:#fff;color:#001d3f;font-weight:950;padding:10px 14px;border:1px solid rgba(15,63,94,.08);white-space:nowrap}.cmr-license-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.cmr-license-info-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:20px;padding:16px;box-shadow:0 12px 32px rgba(8,52,79,.05)}.cmr-license-info-tile ha-icon{width:26px;height:26px;color:#06a6c7}.cmr-license-info-tile span{display:block;margin-top:8px;color:#64768f;font-size:12px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-license-info-tile strong{display:block;margin-top:6px;color:#001d3f;font-size:18px;overflow-wrap:anywhere}.cmr-license-section{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:22px;box-shadow:0 14px 34px rgba(8,52,79,.05)}.cmr-license-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}.cmr-license-form input{width:100%;box-sizing:border-box;border:1px solid rgba(15,63,94,.14);border-radius:14px;padding:13px 14px;background:#fff;color:#001d3f;font:inherit;font-weight:800}.cmr-license-form button,.cmr-license-action-row button{border:0;border-radius:999px;background:#071a33;color:#fff;font-weight:950;padding:13px 18px;cursor:pointer;box-shadow:0 14px 28px rgba(7,26,51,.18);display:inline-flex;align-items:center;gap:8px}.cmr-license-form button:disabled,.cmr-license-action-row button:disabled{opacity:.6;cursor:not-allowed}.cmr-license-action-row button ha-icon{width:20px;height:20px}.cmr-license-help{margin:12px 0 0;color:#51627a;font-weight:750}.cmr-license-message{margin-top:12px;background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:14px;padding:12px 14px;color:#22566d;font-weight:850}.cmr-license-message.warn{background:#fff7df;border-color:rgba(241,165,29,.25);color:#845d00}.cmr-license-action-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:20px;background:#f7fbfd;border:1px solid rgba(15,63,94,.06);border-radius:22px;padding:18px}.cmr-license-action-row h3{margin:0 0 5px;font-size:20px;color:#001d3f}.cmr-license-action-row p{margin:0;color:#36506b;font-weight:750}.cmr-license-support{display:grid;grid-template-columns:58px minmax(0,1fr);gap:18px;background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:22px;box-shadow:0 16px 36px rgba(8,52,79,.06)}.cmr-license-support-icon{width:54px;height:54px;border-radius:50%;background:#fff;display:grid;place-items:center;color:#071a33;box-shadow:0 14px 28px rgba(7,26,51,.10)}.cmr-license-support-icon ha-icon{width:28px;height:28px}.cmr-license-support h3{margin:0 0 8px;font-size:22px;color:#001d3f}.cmr-license-support p{margin:8px 0;color:#253e5a;font-weight:750}.cmr-license-support a{display:inline-flex;align-items:center;gap:8px;margin-top:10px;background:#ffdd00;color:#001d3f;border-radius:999px;padding:12px 18px;text-decoration:none;font-weight:950;box-shadow:0 14px 28px rgba(255,221,0,.22)}.cmr-license-support small{display:block;margin-top:10px;color:#51627a;font-weight:750}.cmr-battery-page{display:grid;gap:20px}.cmr-battery-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-battery-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-battery-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-battery-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-battery-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-battery-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-battery-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-battery-vehicles{display:grid;gap:18px}.cmr-battery-vehicle-card{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-battery-vehicle-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.cmr-battery-vehicle-card h3{margin:0;font-size:24px}.cmr-battery-vehicle-card header span{display:block;color:#64768f;font-weight:800}.cmr-battery-vehicle-card header button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-battery-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-battery-metrics div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-battery-metrics span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-battery-metrics strong{display:block;margin-top:5px;color:#001d3f;font-size:17px}.cmr-battery-metrics small{display:block;margin-top:4px;color:#64768f;font-weight:750}.cmr-battery-form{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:18px;padding:14px;margin:14px 0}.cmr-battery-form-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.cmr-battery-form-grid label{display:grid;gap:6px}.cmr-battery-form-grid label.wide{grid-column:span 5}.cmr-battery-form-grid span,.cmr-battery-check{color:#566b84;font-size:12px;font-weight:900}.cmr-battery-form-grid input,.cmr-battery-form-grid select,.cmr-battery-form-grid textarea{width:100%;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-battery-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-battery-form-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-battery-form-actions button,.cmr-battery-item-side button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-battery-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-battery-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin:10px 0}.cmr-battery-list{margin-top:16px}.cmr-battery-section-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}.cmr-battery-section-title strong{font-size:17px}.cmr-battery-section-title span{color:#64768f;font-weight:800}.cmr-battery-item{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;margin-bottom:10px}.cmr-battery-item.is-installed{border-left:4px solid #1fa971}.cmr-battery-item.has-alert{border-left-color:#e64a2e}.cmr-battery-item-main strong{display:block;color:#001d3f}.cmr-battery-item-main em{font-style:normal;background:#ffece6;border-radius:999px;padding:3px 7px;font-size:11px;color:#ba321e}.cmr-battery-item-main span{display:block;color:#64768f;font-weight:800;margin-top:4px}.cmr-battery-item-main p{margin:8px 0 0;color:#3d4f66}.cmr-battery-item-side{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.cmr-battery-item-side b{font-size:18px;color:#001d3f}.cmr-battery-item-side button.danger{background:#ffe6ea;color:#8a2030}.cmr-equipment-page{display:grid;gap:20px}.cmr-equipment-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-equipment-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-equipment-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-equipment-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-equipment-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-equipment-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-equipment-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-equipment-vehicles{display:grid;gap:18px}.cmr-equipment-vehicle-card{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-equipment-vehicle-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.cmr-equipment-vehicle-card h3{margin:0;font-size:24px}.cmr-equipment-vehicle-card header span{display:block;color:#64768f;font-weight:800}.cmr-equipment-vehicle-card header button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-equipment-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-equipment-metrics div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-equipment-metrics span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-equipment-metrics strong{display:block;margin-top:5px;color:#001d3f;font-size:17px}.cmr-equipment-metrics small{display:block;margin-top:4px;color:#64768f;font-weight:750}.cmr-equipment-form{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:18px;padding:14px;margin:14px 0}.cmr-equipment-form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.cmr-equipment-form-grid label{display:grid;gap:6px}.cmr-equipment-form-grid label.wide{grid-column:span 3}.cmr-equipment-form-grid span,.cmr-equipment-check{color:#566b84;font-size:12px;font-weight:900}.cmr-equipment-form-grid input,.cmr-equipment-form-grid select,.cmr-equipment-form-grid textarea{width:100%;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-equipment-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-equipment-form-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-equipment-form-actions button,.cmr-equipment-item-side button,.cmr-equipment-required-card button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-equipment-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-equipment-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin:10px 0}.cmr-equipment-block{margin-top:16px}.cmr-equipment-section-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}.cmr-equipment-section-title strong{font-size:17px}.cmr-equipment-section-title span{color:#64768f;font-weight:800}.cmr-equipment-required-grid,.cmr-equipment-list{display:grid;gap:10px}.cmr-equipment-required-card{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-equipment-required-card div{display:flex;justify-content:space-between;gap:10px}.cmr-equipment-required-card strong{color:#001d3f}.cmr-equipment-required-card span{font-weight:900;color:#a66d00}.cmr-equipment-required-card p{color:#64768f;font-weight:750;margin:8px 0}.cmr-equipment-required-card footer{display:flex;flex-wrap:wrap;gap:8px}.cmr-equipment-required-card button.danger,.cmr-equipment-item-side button.danger{background:#ffe6ea;color:#8a2030}.cmr-equipment-required-card.is-ignored{opacity:.78}.cmr-equipment-item{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px}.cmr-equipment-item.critical{border-left:4px solid #e64a2e}.cmr-equipment-item.warning{border-left:4px solid #f1a51d}.cmr-equipment-item.ok{border-left:4px solid #1fa971}.cmr-equipment-item-main strong{display:block;color:#001d3f}.cmr-equipment-item-main em{font-style:normal;background:#ffece6;border-radius:999px;padding:3px 7px;font-size:11px;color:#ba321e}.cmr-equipment-item-main span{display:block;color:#64768f;font-weight:800;margin-top:4px}.cmr-equipment-item-main p{margin:8px 0 0;color:#3d4f66}.cmr-equipment-item-side{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.cmr-equipment-item-side b{font-size:18px;color:#001d3f}.cmr-tires-page{display:grid;gap:20px}.cmr-tires-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-tire-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-tire-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-tire-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-tire-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-tire-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-tire-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-tire-vehicles{display:grid;gap:18px}.cmr-tire-vehicle-card{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-tire-vehicle-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.cmr-tire-vehicle-card h3{margin:0;font-size:24px}.cmr-tire-vehicle-card header span{display:block;color:#64768f;font-weight:800}.cmr-tire-vehicle-card header button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-tire-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-tire-metrics div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-tire-metrics span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-tire-metrics strong{display:block;margin-top:5px;color:#001d3f;font-size:17px}.cmr-tire-metrics small{display:block;margin-top:4px;color:#64768f;font-weight:750}.cmr-tire-form{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:18px;padding:14px;margin:14px 0}.cmr-tire-form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-tire-form-grid label{display:grid;gap:6px}.cmr-tire-form-grid label.wide{grid-column:span 4}.cmr-tire-form-grid span,.cmr-tire-check{color:#566b84;font-size:12px;font-weight:900}.cmr-tire-form-grid input,.cmr-tire-form-grid select,.cmr-tire-form-grid textarea{width:100%;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-tire-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-tire-form-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-tire-form-actions button,.cmr-tire-set-side button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-tire-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-tire-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin:10px 0}.cmr-tire-list{margin-top:16px}.cmr-tire-section-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}.cmr-tire-section-title strong{font-size:17px}.cmr-tire-section-title span{color:#64768f;font-weight:800}.cmr-tire-set{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;margin-bottom:10px}.cmr-tire-set.is-mounted{border-left:4px solid #1fa971}.cmr-tire-set-main strong{display:block;color:#001d3f}.cmr-tire-set-main em{font-style:normal;background:#e8fbf0;border-radius:999px;padding:3px 7px;font-size:11px;color:#13784c}.cmr-tire-set-main span{display:block;color:#64768f;font-weight:800;margin-top:4px}.cmr-tire-set-details{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.cmr-tire-set-details small{background:#eef8fb;border-radius:999px;padding:5px 8px;color:#51627a;font-weight:800}.cmr-tire-set-main p{margin:8px 0 0;color:#3d4f66}.cmr-tire-set-side{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.cmr-tire-set-side b{font-size:18px;color:#001d3f}.cmr-tire-set-side button.danger{background:#ffe6ea;color:#8a2030}.cmr-fuel-page{display:grid;gap:20px}.cmr-fuel-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:22px;padding:16px 18px}.cmr-fuel-toolbar strong{display:block;font-size:18px}.cmr-fuel-toolbar span{display:block;color:#64768f;font-weight:750}.cmr-fuel-controls{display:flex;align-items:end;gap:10px;flex-wrap:wrap}.cmr-fuel-controls label{display:grid;gap:6px;color:#64768f;font-weight:900;font-size:12px}.cmr-fuel-controls select{min-width:190px;border:1px solid rgba(15,63,94,.12);border-radius:14px;background:#fff;padding:10px 12px;font-weight:900}.cmr-fuel-controls button,.cmr-fuel-vehicle-card header button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-fuel-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-fuel-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-fuel-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-fuel-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-fuel-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-fuel-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-fuel-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-fuel-vehicles{display:grid;gap:18px}.cmr-fuel-vehicle-card{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-fuel-vehicle-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.cmr-fuel-vehicle-card h3{margin:0;font-size:24px}.cmr-fuel-vehicle-card header span{display:block;color:#64768f;font-weight:800}.cmr-fuel-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.cmr-fuel-metrics div{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px}.cmr-fuel-metrics span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-fuel-metrics strong{display:block;margin-top:5px;color:#001d3f;font-size:17px}.cmr-fuel-metrics small{display:block;margin-top:4px;color:#64768f;font-weight:750}.cmr-fuel-form{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:18px;padding:14px;margin:14px 0}.cmr-fuel-form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.cmr-fuel-form-grid label{display:grid;gap:6px}.cmr-fuel-form-grid label.wide{grid-column:span 3}.cmr-fuel-form-grid span,.cmr-fuel-check{color:#566b84;font-size:12px;font-weight:900}.cmr-fuel-form-grid input,.cmr-fuel-form-grid select,.cmr-fuel-form-grid textarea{width:100%;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-fuel-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-fuel-form-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-fuel-form-actions button,.cmr-fuel-receipt-actions button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-fuel-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-fuel-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin:10px 0}.cmr-fuel-history{margin-top:16px}.cmr-fuel-section-title{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}.cmr-fuel-section-title strong{font-size:17px}.cmr-fuel-section-title span{color:#64768f;font-weight:800}.cmr-fuel-receipt{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;margin-bottom:10px}.cmr-fuel-receipt-main strong{display:block;color:#001d3f}.cmr-fuel-receipt-main span{display:block;color:#64768f;font-weight:800;margin-top:4px}.cmr-fuel-receipt-main b{display:block;color:#001d3f;font-size:18px;margin-top:7px}.cmr-fuel-receipt-main p{margin:8px 0 0;color:#3d4f66}.cmr-fuel-receipt-actions{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.cmr-fuel-receipt-actions button.danger{background:#ffe6ea;color:#8a2030}.cmr-costs-page{display:grid;gap:20px}.cmr-costs-hero{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}.cmr-cost-hero-tile{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:22px;padding:18px;box-shadow:0 12px 32px rgba(8,52,79,.06);position:relative;overflow:hidden}.cmr-cost-hero-tile:after{content:"";position:absolute;right:-28px;top:-30px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-cost-hero-tile ha-icon{width:28px;height:28px;color:#06a6c7}.cmr-cost-hero-tile span{display:block;margin-top:10px;color:#64768f;font-size:12px;font-weight:900}.cmr-cost-hero-tile strong{display:block;margin-top:8px;color:#001d3f;font-size:24px;letter-spacing:-.03em}.cmr-cost-hero-tile small{display:block;margin-top:3px;color:#66788f;font-weight:700}.cmr-costs-section{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px}.cmr-cost-vehicle-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:14px;align-items:start}.cmr-cost-vehicle-card{background:#fff;border:1px solid rgba(15,63,94,.09);border-radius:20px;padding:16px;box-shadow:0 12px 30px rgba(8,52,79,.05)}.cmr-cost-vehicle-card header{display:grid;grid-template-columns:minmax(0,1fr);align-items:flex-start;gap:8px;margin-bottom:12px;min-width:0}.cmr-cost-vehicle-card h4{margin:0;font-size:20px}.cmr-cost-vehicle-card header span{display:block;color:#64768f;font-weight:800;margin-top:2px}.cmr-cost-vehicle-card header strong{font-size:20px;color:#001d3f;max-width:100%;white-space:normal;overflow-wrap:anywhere}.cmr-cost-mini-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.cmr-cost-mini-grid div{background:#f7fcfe;border:1px solid rgba(15,63,94,.08);border-radius:14px;padding:11px}.cmr-cost-mini-grid span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.06em}.cmr-cost-mini-grid strong{display:block;margin-top:5px;color:#001d3f;font-size:15px}.cmr-costs-two{display:grid;grid-template-columns:1fr 1fr;gap:18px}.cmr-section-head.compact{margin-bottom:10px}.cmr-cost-type-list{display:grid;gap:10px}.cmr-cost-type-bar{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px}.cmr-cost-type-bar div{display:flex;justify-content:space-between;gap:12px;align-items:center}.cmr-cost-type-bar strong{color:#001d3f}.cmr-cost-type-bar span{color:#001d3f;font-weight:950}.cmr-cost-type-bar i{display:block;height:10px;border-radius:999px;background:#e8f7fb;overflow:hidden;margin-top:10px}.cmr-cost-type-bar b{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#5ed3e5,#0499bd)}.cmr-upcoming-costs{display:grid;gap:10px}.cmr-upcoming-cost{display:flex;justify-content:space-between;gap:14px;align-items:center;background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:13px 15px}.cmr-upcoming-cost span{display:block;color:#64768f;font-weight:800;margin-top:3px}.cmr-upcoming-cost>strong{font-size:18px;color:#001d3f;white-space:nowrap}.cmr-vehicles-page{display:grid;gap:20px}.cmr-vehicles-hero{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.cmr-vehicles-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:22px;padding:16px 18px}.cmr-vehicles-toolbar strong{display:block;font-size:18px}.cmr-vehicles-toolbar span{display:block;color:#64768f;font-weight:750;margin-top:2px}.cmr-toolbar-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-toolbar-actions button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-vehicles-list{display:grid;gap:18px}.cmr-admin-vehicle-card{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px;box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-admin-vehicle-card.is-critical{border-top:4px solid #e64a2e}.cmr-admin-vehicle-card.is-warning{border-top:4px solid #f1a51d}.cmr-admin-vehicle-card.is-ok{border-top:4px solid #20a66c}.cmr-admin-vehicle-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}.cmr-admin-vehicle-head span{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:950;color:#657991}.cmr-admin-vehicle-head h3{margin:3px 0 2px;font-size:26px;letter-spacing:-.03em}.cmr-admin-vehicle-head small{color:#5e7088;font-weight:800}.cmr-admin-status{text-align:right}.cmr-admin-status strong{display:inline-flex;border-radius:999px;padding:7px 11px;background:#e8fbf0;color:#13784c}.cmr-admin-vehicle-card.is-critical .cmr-admin-status strong{background:#ffece6;color:#ba321e}.cmr-admin-vehicle-card.is-warning .cmr-admin-status strong{background:#fff5d8;color:#9a6200}.cmr-admin-status span{display:block;margin-top:5px;text-transform:none;letter-spacing:0;color:#64768f}.cmr-admin-profile-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:14px}.cmr-admin-info-tile{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px;min-width:0}.cmr-admin-info-tile ha-icon{width:22px;height:22px;color:#06a6c7}.cmr-admin-info-tile span{display:block;margin-top:7px;color:#64768f;font-size:12px;font-weight:900}.cmr-admin-info-tile strong{display:block;margin-top:4px;font-size:16px;color:#001d3f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cmr-admin-table{display:grid;gap:0;background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;overflow:hidden}.cmr-admin-row{display:grid;grid-template-columns:minmax(140px,1.1fr) minmax(120px,.9fr) minmax(120px,.8fr);gap:12px;align-items:center;padding:11px 13px;border-bottom:1px solid rgba(15,63,94,.08)}.cmr-admin-row:last-child{border-bottom:0}.cmr-admin-row strong{color:#001d3f}.cmr-admin-row span{font-weight:900;color:#001d3f}.cmr-admin-row small{color:#64768f;font-weight:800}.cmr-admin-row.ok span{color:#128451}.cmr-admin-row.warning span{color:#a66d00}.cmr-admin-row.critical span{color:#d33a21}.cmr-admin-section-title button{margin-left:auto;border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-admin-history{display:grid;gap:10px}.cmr-admin-history-record{background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:16px;padding:12px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0;overflow:hidden}.cmr-admin-history-record.is-restored{opacity:.78}.cmr-admin-history-record em{font-style:normal;background:#eef8fb;border-radius:999px;padding:3px 7px;font-size:11px;color:#51627a}.cmr-admin-history-actions{display:flex;flex-direction:row;gap:8px;align-items:flex-start;justify-content:flex-start;flex-wrap:wrap;min-width:0;max-width:100%}.cmr-admin-history-actions button,.cmr-admin-form-actions button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:8px 12px;cursor:pointer}.cmr-admin-history-actions button.danger{background:#ffe6ea;color:#8a2030}.cmr-admin-form-actions button.secondary{background:#eef6f9;color:#4c6278}.cmr-admin-service-form{background:#f7fcfe;border:1px solid rgba(15,63,94,.09);border-radius:16px;padding:14px;margin:10px 0}.cmr-admin-form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-admin-form-grid label{display:grid;gap:6px}.cmr-admin-form-grid label.wide{grid-column:span 2}.cmr-admin-form-grid span,.cmr-admin-check{color:#566b84;font-size:12px;font-weight:900}.cmr-admin-form-grid input,.cmr-admin-form-grid select,.cmr-admin-form-grid textarea{width:100%;box-sizing:border-box;border:1px solid rgba(15,63,94,.14);border-radius:12px;padding:10px 11px;background:#fff;color:#001d3f;font:inherit;font-weight:750}.cmr-admin-check{display:flex;align-items:center;gap:8px;margin:10px 0}.cmr-admin-form-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}.cmr-admin-help,.cmr-admin-message{background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:12px;padding:10px 12px;color:#22566d;font-weight:800;margin-bottom:10px}.cmr-admin-history-main{min-width:0;max-width:100%;overflow:hidden}.cmr-admin-history-record strong{display:block;color:#001d3f;max-width:100%;white-space:normal;overflow-wrap:anywhere}.cmr-admin-history-record span{display:block;color:#64768f;font-weight:800;margin-top:4px;max-width:100%;white-space:normal;overflow-wrap:anywhere}.cmr-admin-history-record p{margin:8px 0 0;color:#3d4f66;white-space:pre-line;max-width:100%;overflow-wrap:anywhere}.cmr-admin-sections{display:grid;gap:12px}.cmr-admin-sections section{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:18px;padding:14px}.cmr-admin-section-title{display:flex;align-items:center;gap:8px;margin-bottom:10px;color:#001d3f}.cmr-admin-section-title ha-icon{width:20px;height:20px;color:#06a6c7}.cmr-admin-chip-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.cmr-admin-chip-grid.one{grid-template-columns:1fr}.cmr-admin-empty{border:1px dashed rgba(15,63,94,.18);border-radius:16px;padding:12px 14px;color:#64768f;background:#fff}.cmr-admin-alerts{display:flex;flex-wrap:wrap;gap:8px}.cmr-admin-alerts span{border-radius:999px;padding:7px 10px;font-size:12px;font-weight:900;background:#fff5d8;color:#9a6200}.cmr-admin-alerts span.critical{background:#ffece6;color:#ba321e}.cmr-admin-ok{display:flex;align-items:center;gap:8px;color:#168455;font-weight:850}.cmr-admin-ok ha-icon{width:18px;height:18px}.cmr-admin-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}.cmr-admin-actions button{border:0;border-radius:999px;background:#dff8ff;color:#00405d;font-weight:900;padding:10px 14px;cursor:pointer}.cmr-placeholder{background:#f7fcfe;border:1px dashed rgba(15,63,94,.18);border-radius:22px;padding:28px;text-align:center;color:#60748d}.cmr-placeholder ha-icon{width:42px;height:42px;color:#0aa5c6}.cmr-placeholder strong{display:block;font-size:20px;color:#10233f;margin-top:12px}.cmr-chart-card.empty{text-align:center;color:#64768f}
       .cmr-overview-page{display:grid;gap:20px}.cmr-overview-hero{display:flex;align-items:center;justify-content:space-between;gap:18px;border-radius:26px;padding:22px 24px;border:1px solid rgba(15,63,94,.09);background:linear-gradient(135deg,#f8fdff,#e8f9fd);box-shadow:0 14px 34px rgba(8,52,79,.06)}.cmr-overview-hero span,.cmr-section-head span{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:950;color:#657991}.cmr-overview-hero strong{display:block;font-size:34px;letter-spacing:-.03em;margin:4px 0}.cmr-overview-hero p{margin:0;color:#60748d;font-weight:750}.cmr-overview-hero.is-ok{border-top:4px solid #20a66c}.cmr-overview-hero.is-warning{border-top:4px solid #f1a51d}.cmr-overview-hero.is-critical{border-top:4px solid #e64a2e}.cmr-overview-hero-actions{display:flex;gap:10px;flex-wrap:wrap}.cmr-overview-hero-actions button,.cmr-section-head button,.cmr-alert-item button,.cmr-vehicle-card footer button{border:0;border-radius:15px;background:#ddf7fc;color:#0a5b76;padding:10px 14px;font-weight:950;cursor:pointer}.cmr-overview-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:14px}.cmr-kpi{position:relative;overflow:hidden}.cmr-kpi:after{content:"";position:absolute;right:-24px;top:-28px;width:86px;height:86px;border-radius:50%;background:rgba(8,166,199,.08)}.cmr-kpi-icon{width:36px;height:36px;border-radius:14px;display:grid;place-items:center;background:#e6f8fc;color:#06a6c7}.cmr-kpi.tone-red .cmr-kpi-icon{background:#ffece6;color:#d84a2d}.cmr-kpi.tone-amber .cmr-kpi-icon{background:#fff5d8;color:#c77a00}.cmr-kpi.tone-green .cmr-kpi-icon{background:#e8fbf0;color:#168455}.cmr-kpi.tone-purple .cmr-kpi-icon{background:#f0ecff;color:#6650c7}.cmr-kpi.tone-cyan .cmr-kpi-icon{background:#e4faff;color:#008eac}.cmr-legal-section{margin-bottom:20px}.cmr-legal-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.cmr-legal-card{display:grid;grid-template-columns:42px minmax(0,1fr);gap:12px;align-items:center;background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:18px;padding:13px 14px;box-shadow:0 10px 26px rgba(8,52,79,.05)}.cmr-legal-card.ok{border-top:3px solid #1fa971}.cmr-legal-card.warning{border-top:3px solid #f1a51d}.cmr-legal-card.critical{border-top:3px solid #e64a2e}.cmr-legal-icon{width:42px;height:42px;border-radius:15px;display:grid;place-items:center;background:#e6f8fc;color:#06a6c7}.cmr-legal-card.warning .cmr-legal-icon{background:#fff5d8;color:#c77a00}.cmr-legal-card.critical .cmr-legal-icon{background:#ffece6;color:#d84a2d}.cmr-legal-body{min-width:0}.cmr-legal-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.cmr-legal-card span{display:block;color:#64768f;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}.cmr-legal-card em{font-style:normal;color:#001d3f;background:#eafaff;border:1px solid rgba(6,166,199,.18);border-radius:999px;padding:4px 8px;font-size:11px;font-weight:950;white-space:nowrap;max-width:48%;overflow:hidden;text-overflow:ellipsis}.cmr-legal-card strong{display:block;font-size:18px;line-height:1.15;margin:5px 0 3px;color:#001d3f}.cmr-legal-card small{display:block;color:#51627a;font-size:12px;line-height:1.25}.cmr-overview-section{background:#fafeff;border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:18px}.cmr-section-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}.cmr-section-head h3{margin:3px 0 0;font-size:22px;letter-spacing:-.025em}.cmr-overview-vehicles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.cmr-vehicle-card{background:#fff}.cmr-vehicle-card.is-critical{border-top:4px solid #e64a2e}.cmr-vehicle-card.is-warning{border-top:4px solid #f1a51d}.cmr-vehicle-card.is-ok{border-top:4px solid #20a66c}.cmr-status-badge{display:inline-flex;align-items:center;border-radius:999px;padding:7px 11px;background:#e8fbf0;color:#13784c;font-weight:950;white-space:nowrap}.cmr-vehicle-card.is-critical .cmr-status-badge{background:#ffece6;color:#ba321e}.cmr-vehicle-card.is-warning .cmr-status-badge{background:#fff5d8;color:#9a6200}.cmr-vehicle-maintenance{display:grid;grid-template-columns:repeat(1,minmax(0,1fr));gap:10px;margin:14px 0 12px}.cmr-vehicle-maintenance-chip{display:grid;grid-template-columns:34px minmax(0,1fr);gap:9px;align-items:center;background:#fff;border:1px solid rgba(15,63,94,.08);border-left:4px solid #1fa971;border-radius:16px;padding:10px}.cmr-vehicle-maintenance-chip.warning{border-left-color:#f1a51d}.cmr-vehicle-maintenance-chip.critical{border-left-color:#e64a2e}.cmr-vehicle-maintenance-chip ha-icon{width:34px;height:34px;padding:7px;box-sizing:border-box;border-radius:12px;background:#e6f8fc;color:#06a6c7}.cmr-vehicle-maintenance-chip.warning ha-icon{background:#fff5d8;color:#c77a00}.cmr-vehicle-maintenance-chip.critical ha-icon{background:#ffece6;color:#d84a2d}.cmr-vehicle-maintenance-chip span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.08em}.cmr-vehicle-maintenance-chip strong{display:block;color:#001d3f;font-size:15px;line-height:1.1;margin:3px 0}.cmr-vehicle-maintenance-chip small{display:block;color:#51627a;font-size:11px;line-height:1.2}.cmr-vehicle-legal{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0 12px}.cmr-vehicle-legal-chip{display:grid;grid-template-columns:34px minmax(0,1fr);gap:9px;align-items:center;background:#fff;border:1px solid rgba(15,63,94,.08);border-left:4px solid #1fa971;border-radius:16px;padding:10px}.cmr-vehicle-legal-chip.warning{border-left-color:#f1a51d}.cmr-vehicle-legal-chip.critical{border-left-color:#e64a2e}.cmr-vehicle-legal-chip ha-icon{width:34px;height:34px;padding:7px;box-sizing:border-box;border-radius:12px;background:#e6f8fc;color:#06a6c7}.cmr-vehicle-legal-chip.warning ha-icon{background:#fff5d8;color:#c77a00}.cmr-vehicle-legal-chip.critical ha-icon{background:#ffece6;color:#d84a2d}.cmr-vehicle-legal-chip span{display:block;color:#64768f;font-size:11px;font-weight:950;text-transform:uppercase;letter-spacing:.08em}.cmr-vehicle-legal-chip strong{display:block;color:#001d3f;font-size:15px;line-height:1.1;margin:3px 0}.cmr-vehicle-legal-chip small{display:block;color:#51627a;font-size:11px;line-height:1.2}.cmr-vehicle-legal-empty{margin:14px 0 12px;padding:12px 14px;border:1px dashed rgba(15,63,94,.18);border-radius:16px;color:#64768f;background:#f8fdff}.cmr-vehicle-alerts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.cmr-vehicle-alerts span{border-radius:999px;padding:7px 10px;font-size:12px;font-weight:900;background:#fff5d8;color:#9a6200}.cmr-vehicle-alerts span.critical{background:#ffece6;color:#ba321e}.cmr-vehicle-ok{display:flex;align-items:center;gap:8px;margin-top:14px;color:#168455;font-weight:850}.cmr-vehicle-ok ha-icon{width:18px;height:18px}.cmr-vehicle-card footer{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}.cmr-alert-list{display:grid;gap:10px}.cmr-alert-item{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid rgba(15,63,94,.08);border-radius:18px;padding:13px}.cmr-alert-item ha-icon{width:24px;height:24px;color:#c77a00}.cmr-alert-item.critical ha-icon{color:#d84a2d}.cmr-alert-item div{flex:1;min-width:0}.cmr-alert-item strong{display:block}.cmr-alert-item span{display:block;color:#66788f;font-weight:750;margin-top:2px}.cmr-good-news{display:flex;align-items:center;gap:12px;background:#f4fff8;border:1px solid rgba(32,166,108,.18);border-radius:20px;padding:18px;color:#168455}.cmr-good-news ha-icon{width:32px;height:32px}.cmr-good-news strong{display:block;color:#0c4f34}.cmr-good-news span{display:block;margin-top:3px;color:#47705d;font-weight:700}
       .cmr-tooltip{position:fixed;z-index:50;pointer-events:none;background:#10233f;color:#fff;border-radius:12px;padding:9px 12px;font-size:12px;font-weight:800;box-shadow:0 10px 30px rgba(0,0,0,.22);max-width:280px}
       @media (max-width:1200px){.cmr-hero{grid-template-columns:1fr}.cmr-hero-side{grid-template-columns:repeat(4,1fr);grid-template-rows:auto}.cmr-hero h1{font-size:42px}.cmr-tab span{display:none}.cmr-tabs{grid-template-columns:repeat(10,1fr)}.cmr-metrics-row{grid-template-columns:repeat(3,1fr)}.cmr-legal-grid{grid-template-columns:repeat(2,1fr)}.cmr-vehicle-legal{grid-template-columns:repeat(2,minmax(0,1fr))}.cmr-vehicles-hero,.cmr-costs-hero,.cmr-fuel-hero,.cmr-fuel-metrics,.cmr-tires-hero,.cmr-tire-metrics,.cmr-equipment-hero,.cmr-equipment-metrics,.cmr-battery-hero,.cmr-battery-metrics,.cmr-battery-form-grid,.cmr-license-grid,.cmr-settings-hero,.cmr-settings-grid,.cmr-cost-vehicle-grid,.cmr-costs-two{grid-template-columns:repeat(2,1fr)}.cmr-admin-profile-grid{grid-template-columns:repeat(3,1fr)}.cmr-admin-chip-grid{grid-template-columns:repeat(2,1fr)}.cmr-statistics-hero{grid-template-columns:repeat(2,minmax(0,1fr))}.cmr-overview-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.cmr-overview-vehicles{grid-template-columns:1fr}}
@@ -4880,7 +5264,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           color:#a9bfd2;
         }
         .cmr-filterbar select,.cmr-page select,.cmr-license-form input,
-        .cmr-settings-field input,.cmr-fuel-form-grid input,.cmr-fuel-form-grid select,.cmr-fuel-form-grid textarea,
+        .cmr-settings-field input,.cmr-settings-field select,.cmr-fuel-form-grid input,.cmr-fuel-form-grid select,.cmr-fuel-form-grid textarea,
         .cmr-tire-form-grid input,.cmr-tire-form-grid select,.cmr-tire-form-grid textarea,
         .cmr-equipment-form-grid input,.cmr-equipment-form-grid select,.cmr-equipment-form-grid textarea,
         .cmr-battery-form-grid input,.cmr-battery-form-grid select,.cmr-battery-form-grid textarea,
@@ -4890,7 +5274,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           border-color:rgba(149,205,224,.22);
         }
         .cmr-filterbar select:focus,.cmr-page select:focus,.cmr-license-form input:focus,
-        .cmr-settings-field input:focus,.cmr-fuel-form-grid input:focus,.cmr-fuel-form-grid select:focus,.cmr-fuel-form-grid textarea:focus,
+        .cmr-settings-field input:focus,.cmr-settings-field select:focus,.cmr-fuel-form-grid input:focus,.cmr-fuel-form-grid select:focus,.cmr-fuel-form-grid textarea:focus,
         .cmr-tire-form-grid input:focus,.cmr-tire-form-grid select:focus,.cmr-tire-form-grid textarea:focus,
         .cmr-equipment-form-grid input:focus,.cmr-equipment-form-grid select:focus,.cmr-equipment-form-grid textarea:focus,
         .cmr-battery-form-grid input:focus,.cmr-battery-form-grid select:focus,.cmr-battery-form-grid textarea:focus,
@@ -5070,7 +5454,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
         }
 
         .cmr-filterbar select,.cmr-page select,.cmr-license-form input,
-        .cmr-settings-field input,.cmr-fuel-form-grid input,.cmr-fuel-form-grid select,.cmr-fuel-form-grid textarea,
+        .cmr-settings-field input,.cmr-settings-field select,.cmr-fuel-form-grid input,.cmr-fuel-form-grid select,.cmr-fuel-form-grid textarea,
         .cmr-tire-form-grid input,.cmr-tire-form-grid select,.cmr-tire-form-grid textarea,
         .cmr-equipment-form-grid input,.cmr-equipment-form-grid select,.cmr-equipment-form-grid textarea,
         .cmr-battery-form-grid input,.cmr-battery-form-grid select,.cmr-battery-form-grid textarea,
@@ -7106,8 +7490,9 @@ class CarManagerRomaniaPanel extends HTMLElement {
       }
 
       .cmr-panel.is-compact .cmr-tab.active{
-        flex-basis:62px !important;
-        min-width:62px !important;
+        flex-basis:58px !important;
+        min-width:58px !important;
+        max-width:58px !important;
       }
 
       .cmr-panel.is-compact .cmr-tab span{
@@ -7127,6 +7512,113 @@ class CarManagerRomaniaPanel extends HTMLElement {
       .cmr-panel.is-compact .cmr-admin-history-record{display:grid !important;grid-template-columns:minmax(0,1fr) !important;}
       .cmr-panel.is-compact .cmr-tabs-shell{display:grid !important;grid-template-columns:44px minmax(0,1fr) 44px !important;}
       .cmr-panel.is-compact .cmr-tabs-arrow{display:flex !important;}
+
+
+      /* Fix beta b13: formularele de adăugare/editare pe mobil nu mai păstrează coloane înghesuite. */
+      .cmr-panel.is-compact .cmr-fuel-form-grid,
+      .cmr-panel.is-compact .cmr-tire-form-grid,
+      .cmr-panel.is-compact .cmr-equipment-form-grid,
+      .cmr-panel.is-compact .cmr-battery-form-grid,
+      .cmr-panel.is-compact .cmr-admin-form-grid{
+        display:grid !important;
+        grid-template-columns:minmax(0,1fr) !important;
+        gap:12px !important;
+        width:100% !important;
+        max-width:100% !important;
+        min-width:0 !important;
+      }
+
+      .cmr-panel.is-compact .cmr-fuel-form-grid label,
+      .cmr-panel.is-compact .cmr-tire-form-grid label,
+      .cmr-panel.is-compact .cmr-equipment-form-grid label,
+      .cmr-panel.is-compact .cmr-battery-form-grid label,
+      .cmr-panel.is-compact .cmr-admin-form-grid label,
+      .cmr-panel.is-compact .cmr-fuel-form-grid label.wide,
+      .cmr-panel.is-compact .cmr-tire-form-grid label.wide,
+      .cmr-panel.is-compact .cmr-equipment-form-grid label.wide,
+      .cmr-panel.is-compact .cmr-battery-form-grid label.wide,
+      .cmr-panel.is-compact .cmr-admin-form-grid label.wide{
+        display:grid !important;
+        grid-column:auto !important;
+        gap:7px !important;
+        width:100% !important;
+        min-width:0 !important;
+        max-width:100% !important;
+      }
+
+      .cmr-panel.is-compact .cmr-fuel-form-grid span,
+      .cmr-panel.is-compact .cmr-tire-form-grid span,
+      .cmr-panel.is-compact .cmr-equipment-form-grid span,
+      .cmr-panel.is-compact .cmr-battery-form-grid span,
+      .cmr-panel.is-compact .cmr-admin-form-grid span{
+        position:static !important;
+        display:block !important;
+        width:100% !important;
+        max-width:100% !important;
+        white-space:normal !important;
+        overflow-wrap:anywhere !important;
+        line-height:1.25 !important;
+        margin:0 !important;
+      }
+
+      .cmr-panel.is-compact .cmr-fuel-form-grid input,
+      .cmr-panel.is-compact .cmr-fuel-form-grid select,
+      .cmr-panel.is-compact .cmr-fuel-form-grid textarea,
+      .cmr-panel.is-compact .cmr-tire-form-grid input,
+      .cmr-panel.is-compact .cmr-tire-form-grid select,
+      .cmr-panel.is-compact .cmr-tire-form-grid textarea,
+      .cmr-panel.is-compact .cmr-equipment-form-grid input,
+      .cmr-panel.is-compact .cmr-equipment-form-grid select,
+      .cmr-panel.is-compact .cmr-equipment-form-grid textarea,
+      .cmr-panel.is-compact .cmr-battery-form-grid input,
+      .cmr-panel.is-compact .cmr-battery-form-grid select,
+      .cmr-panel.is-compact .cmr-battery-form-grid textarea,
+      .cmr-panel.is-compact .cmr-admin-form-grid input,
+      .cmr-panel.is-compact .cmr-admin-form-grid select,
+      .cmr-panel.is-compact .cmr-admin-form-grid textarea{
+        width:100% !important;
+        min-width:0 !important;
+        max-width:100% !important;
+        box-sizing:border-box !important;
+      }
+
+      .cmr-admin-status button{
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        margin-top:8px;
+        border:1px solid rgba(6,166,199,.24);
+        border-radius:999px;
+        background:#dff8ff;
+        color:#00405d;
+        font-weight:950;
+        padding:8px 12px;
+        cursor:pointer;
+      }
+
+      @media (prefers-color-scheme: dark){
+        .cmr-rovinieta-account-status.is-configured{
+          background:rgba(5,82,60,.78) !important;
+          border-color:rgba(82,235,170,.72) !important;
+          box-shadow:0 0 0 1px rgba(82,235,170,.14) inset !important;
+        }
+        .cmr-rovinieta-account-status.is-configured strong{
+          color:#ffffff !important;
+          text-shadow:0 1px 0 rgba(0,0,0,.35) !important;
+        }
+        .cmr-rovinieta-account-status.is-configured small{
+          color:#e3fff1 !important;
+        }
+        .cmr-rovinieta-account-status.is-configured ha-icon{
+          color:#6ff0b5 !important;
+        }
+        .cmr-admin-status button{
+          background:#e1faff !important;
+          color:#002f42 !important;
+          border-color:rgba(126,235,255,.75) !important;
+          text-shadow:none !important;
+        }
+      }
 
 
     `;

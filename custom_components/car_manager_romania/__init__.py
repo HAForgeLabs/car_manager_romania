@@ -16,6 +16,11 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
+
+try:
+    from homeassistant.core import SupportsResponse
+except ImportError:  # pragma: no cover - compatibilitate cu versiuni mai vechi Home Assistant
+    SupportsResponse = None  # type: ignore[assignment]
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.dispatcher import dispatcher_send
@@ -27,6 +32,9 @@ from .const import (
     CONF_FUEL_PROFILE,
     CONF_LEGAL_TERMS,
     CONF_LICENSE_PLATE,
+    CONF_REGISTRATION_CERTIFICATE,
+    CONF_REGISTRATION_COUNTRY,
+    CONF_IMPORT_SOURCE,
     CONF_NOTIFICATIONS_ENABLED,
     CONF_NOTIFY_MAINTENANCE,
     CONF_NOTIFY_LEGAL,
@@ -43,7 +51,13 @@ from .const import (
     CONF_REMOVED,
     CONF_ROVINIETA_PASSWORD,
     CONF_ROVINIETA_SCAN_INTERVAL,
+    CONF_ROVINIETA_PROVIDER,
+    ROVINIETA_PROVIDER_CNAIR,
+    ROVINIETA_PROVIDER_E_ROVINIETA,
+    ROVINIETA_PROVIDERS,
     CONF_ROVINIETA_USERNAME,
+    CONF_ROVINIETA_CATEGORY,
+    CONF_FETESTI_BRIDGE_CATEGORY,
     CONF_VEHICLES,
     CONF_VEHICLE_ID,
     CONF_VIN,
@@ -53,6 +67,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
     SERVICE_ADD_VEHICLE,
+    SERVICE_EDIT_VEHICLE,
     SERVICE_REMOVE_VEHICLE,
     SERVICE_RESTORE_VEHICLE,
     SERVICE_RESTORE_ALL_VEHICLES,
@@ -69,6 +84,9 @@ from .const import (
     SERVICE_REFRESH_LICENSE_STATUS,
     SERVICE_SET_NOTIFICATION_OPTIONS,
     SERVICE_SET_ROVINIETA_ACCOUNT,
+    SERVICE_GET_ROVINIETA_ACCOUNT,
+    SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES,
+    SERVICE_IMPORT_ROVINIETA_VEHICLE,
     SERVICE_ADD_FUEL_RECEIPT,
     SERVICE_UPDATE_FUEL_RECEIPT,
     SERVICE_DELETE_FUEL_RECEIPT,
@@ -100,6 +118,7 @@ from .legal import set_legal_ignored
 from .rovinieta.api import ERovinietaApiClient
 from .rovinieta.cnair_api import CnairERovinietaApiClient
 from .rovinieta.coordinator import CarManagerRovinietaCoordinator
+from .rovinieta.parser import merge_account_data, normalize_cnair_payload, normalize_payload
 from .storage import CarManagerFuelReceiptStore, CarManagerServiceHistoryStore, CarManagerVehicleStore, merge_vehicle_sources
 from .tire import CarManagerTireSetStore
 from .equipment import CarManagerEquipmentItemStore
@@ -410,6 +429,19 @@ ADD_VEHICLE_SERVICE_SCHEMA = vol.Schema(
     }
 )
 
+EDIT_VEHICLE_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Required(CONF_VEHICLE_ID): str,
+        vol.Optional(CONF_NAME): str,
+        vol.Optional(CONF_LICENSE_PLATE): str,
+        vol.Optional(CONF_VIN): str,
+        vol.Optional(CONF_KM): vol.Coerce(int),
+        vol.Optional(CONF_REGISTRATION_COUNTRY): str,
+        vol.Optional(CONF_REGISTRATION_CERTIFICATE): str,
+    }
+)
+
 REMOVE_VEHICLE_SERVICE_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): str,
@@ -717,6 +749,300 @@ def _find_vehicle_by_reference(vehicles: list[dict[str, Any]], reference: str) -
     return None
 
 
+def _find_vehicle_by_online_identity(
+    vehicles: list[dict[str, Any]],
+    *,
+    vin: str | None,
+    license_plate: str | None,
+) -> dict[str, Any] | None:
+    """Caută defensiv un autovehicul existent după VIN sau număr de înmatriculare."""
+
+    normalized_vin = _normalize_vehicle_reference(vin)
+    normalized_plate = _normalize_vehicle_reference(license_plate)
+
+    for vehicle in vehicles:
+        if not isinstance(vehicle, dict):
+            continue
+        if normalized_vin and _normalize_vehicle_reference(vehicle.get(CONF_VIN)) == normalized_vin:
+            return vehicle
+        if normalized_plate and _normalize_vehicle_reference(vehicle.get(CONF_LICENSE_PLATE)) == normalized_plate:
+            return vehicle
+
+    return None
+
+
+def _first_text_from_nested(data: Any, wanted_parts: tuple[str, ...]) -> str | None:
+    """Caută o valoare text într-un dicționar brut, fără să expună date sensibile în loguri."""
+
+    if isinstance(data, dict):
+        for key, value in data.items():
+            key_text = str(key).lower()
+            if all(part in key_text for part in wanted_parts) and isinstance(value, (str, int, float)):
+                text_value = str(value).strip()
+                if text_value:
+                    return text_value
+        for value in data.values():
+            found = _first_text_from_nested(value, wanted_parts)
+            if found:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = _first_text_from_nested(item, wanted_parts)
+            if found:
+                return found
+
+    return None
+
+
+def _rovinieta_vehicle_import_dict(rovinieta_vehicle: Any, existing_vehicles: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Transformă un vehicul online într-un obiect sigur pentru afișare/import."""
+
+    plate = str(getattr(rovinieta_vehicle, "plate_no", "") or "").strip().upper().replace(" ", "")
+    if not plate:
+        return None
+
+    vin = str(getattr(rovinieta_vehicle, "chasis_no", "") or "").strip().upper()
+    country = str(getattr(rovinieta_vehicle, "country_name", "") or getattr(rovinieta_vehicle, "country_code", "") or "").strip()
+    source = str(getattr(rovinieta_vehicle, "source", "") or LEGAL_SOURCE_EROVINIETA)
+    raw = getattr(rovinieta_vehicle, "raw", {}) or {}
+    active_vignette = getattr(rovinieta_vehicle, "active_vignette", None)
+    if not isinstance(active_vignette, dict):
+        active_vignette = {}
+
+    registration_certificate = (
+        _first_text_from_nested(raw, ("cert",))
+        or _first_text_from_nested(raw, ("talon",))
+        or _first_text_from_nested(raw, ("document",))
+    )
+    vignette_category = (
+        str(getattr(rovinieta_vehicle, "category_vignette_title", "") or "").strip()
+        or str(active_vignette.get("vignetteCategory") or active_vignette.get("category") or "").strip()
+    )
+    toll_category = str(getattr(rovinieta_vehicle, "category_toll_title", "") or "").strip()
+
+    existing = _find_vehicle_by_online_identity(existing_vehicles, vin=vin, license_plate=plate)
+    expiry = _rovinieta_date_value(getattr(rovinieta_vehicle, "expiry", None))
+    start_date = _active_rovinieta_start_date(rovinieta_vehicle)
+    price = _active_rovinieta_price(rovinieta_vehicle)
+
+    return {
+        "import_key": _rovinieta_plate_key(plate),
+        "license_plate": plate,
+        "country": country,
+        "vin": vin,
+        "registration_certificate": registration_certificate or "",
+        "rovinieta_category": vignette_category,
+        "fetesti_bridge_category": toll_category,
+        "rovinieta_status": "activă" if bool(getattr(rovinieta_vehicle, "has_active_vignette", False)) else "fără rovinietă activă",
+        "rovinieta_start_date": start_date or "",
+        "rovinieta_end_date": expiry or "",
+        "rovinieta_days_remaining": getattr(rovinieta_vehicle, "days_remaining", None),
+        "rovinieta_cost": price,
+        "source": source,
+        "source_label": "CNAIR / erovinieta.ro" if "erovinieta.ro" in source and "e-rovinieta" not in source else "e-rovinieta.ro",
+        "existing": existing is not None,
+        "existing_vehicle_id": str(existing.get(CONF_VEHICLE_ID) or "") if existing else "",
+        "existing_vehicle_name": str(existing.get(CONF_NAME) or "") if existing else "",
+        "can_import": existing is None,
+    }
+
+
+
+def _rovinieta_account_store_key(entry: CarManagerConfigEntry) -> str:
+    """Returnează cheia de stocare dedicată contului de rovinietă pentru intrarea curentă.
+
+    Cheia include `entry_id` ca să nu amestecăm niciodată date între mai multe
+    instanțe ale integrării sau valori rămase din versiuni beta anterioare.
+    """
+
+    return f"{DOMAIN}_rovinieta_account_{entry.entry_id}"
+
+
+async def _async_load_rovinieta_account_store(hass: HomeAssistant, entry: CarManagerConfigEntry) -> dict[str, Any]:
+    """Încarcă datele contului de rovinietă salvate separat pentru dashboard.
+
+    Citim doar store-ul asociat intrării curente. Nu mai folosim store-ul global
+    din versiunile beta anterioare, deoarece putea afișa în UI un utilizator
+    rămas din cache/local storage și crea confuzie.
+    """
+
+    try:
+        from homeassistant.helpers.storage import Store
+
+        store: Store[dict[str, Any]] = Store(
+            hass,
+            1,
+            _rovinieta_account_store_key(entry),
+        )
+        raw = await store.async_load()
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Nu am putut încărca store-ul contului de rovinietă: %s", err)
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    # Protecție suplimentară pentru migrații sau fișiere copiate manual.
+    stored_entry_id = raw.get("entry_id")
+    if stored_entry_id and stored_entry_id != entry.entry_id:
+        return {}
+
+    return raw
+
+
+async def _async_save_rovinieta_account_store(hass: HomeAssistant, entry: CarManagerConfigEntry, data: dict[str, Any]) -> None:
+    """Salvează datele contului de rovinietă într-un store intern per config entry."""
+
+    try:
+        from homeassistant.helpers.storage import Store
+
+        store: Store[dict[str, Any]] = Store(
+            hass,
+            1,
+            _rovinieta_account_store_key(entry),
+        )
+        payload = dict(data)
+        payload["entry_id"] = entry.entry_id
+        await store.async_save(payload)
+    except Exception as err:  # noqa: BLE001
+        raise HomeAssistantError("Nu am putut salva local contul de rovinietă online.") from err
+
+
+async def _async_rovinieta_account_options(hass: HomeAssistant, entry: CarManagerConfigEntry) -> dict[str, Any]:
+    """Returnează setările contului de rovinietă, cu prioritate pentru store.
+
+    Ordinea este: data inițială config entry, options, apoi store-ul dedicat.
+    Store-ul are prioritate pentru că este actualizat direct din dashboard.
+    """
+
+    stored = await _async_load_rovinieta_account_store(hass, entry)
+    options = {**dict(entry.data), **dict(entry.options), **stored}
+
+    provider = str(options.get(CONF_ROVINIETA_PROVIDER) or ROVINIETA_PROVIDER_CNAIR).strip()
+    if provider not in ROVINIETA_PROVIDERS:
+        provider = ROVINIETA_PROVIDER_CNAIR
+    options[CONF_ROVINIETA_PROVIDER] = provider
+
+    try:
+        interval = int(options.get(CONF_ROVINIETA_SCAN_INTERVAL) or DEFAULT_ROVINIETA_SCAN_INTERVAL)
+    except (TypeError, ValueError):
+        interval = DEFAULT_ROVINIETA_SCAN_INTERVAL
+    options[CONF_ROVINIETA_SCAN_INTERVAL] = max(MIN_ROVINIETA_SCAN_INTERVAL, interval)
+
+    return options
+
+
+async def _async_fetch_rovinieta_account_data_direct(
+    hass: HomeAssistant,
+    entry: CarManagerConfigEntry,
+) -> Any:
+    """Citește direct datele din portaluri, fără să depindă de reload-ul coordonatorului.
+
+    Folosim aceeași pereche user/parolă salvată în configurarea integrării.
+    Dacă unul dintre portaluri eșuează, păstrăm rezultatul celuilalt portal, iar
+    erorile sunt întoarse doar dacă niciun portal nu livrează date utile.
+    """
+
+    options = await _async_rovinieta_account_options(hass, entry)
+    username = str(options.get(CONF_ROVINIETA_USERNAME) or "").strip()
+    password = str(options.get(CONF_ROVINIETA_PASSWORD) or "")
+    provider = str(options.get(CONF_ROVINIETA_PROVIDER) or ROVINIETA_PROVIDER_CNAIR).strip()
+
+    if not username or not password:
+        raise HomeAssistantError("Contul de rovinietă online nu este configurat. Alege portalul, salvează utilizatorul și parola, apoi încearcă din nou.")
+
+    session = async_get_clientsession(hass)
+
+    if provider == ROVINIETA_PROVIDER_E_ROVINIETA:
+        try:
+            payload = await ERovinietaApiClient(session, username=username, password=password).async_fetch_all()
+            account_data = normalize_payload(payload)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Scanarea importului e-rovinieta.ro a eșuat: %s", err)
+            raise HomeAssistantError("Nu am putut citi autovehiculele din e-rovinieta.ro. Verifică portalul selectat, utilizatorul și parola.") from err
+    else:
+        try:
+            cnair_payload = await CnairERovinietaApiClient(session, username=username, password=password).async_fetch_all()
+            account_data = normalize_cnair_payload(cnair_payload)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Scanarea importului CNAIR / erovinieta.ro a eșuat: %s", err)
+            raise HomeAssistantError("Nu am putut citi autovehiculele din CNAIR / erovinieta.ro. Verifică portalul selectat, utilizatorul și parola.") from err
+
+    portal_label = "e-rovinieta.ro" if provider == ROVINIETA_PROVIDER_E_ROVINIETA else "CNAIR / erovinieta.ro"
+    _LOGGER.debug(
+        "Scanare import rovinietă %s: %s vehicule primite",
+        portal_label,
+        len(account_data.vehicles),
+    )
+
+    if account_data.vehicles:
+        return account_data
+
+    raise HomeAssistantError(f"Nu am găsit autovehicule disponibile în contul selectat: {portal_label}.")
+
+
+async def _async_reconfigure_rovinieta_coordinator(
+    hass: HomeAssistant,
+    entry: CarManagerConfigEntry,
+) -> None:
+    """Reconstruiește coordonatorul rovinietei fără reload complet al integrării."""
+
+    runtime_data = entry.runtime_data
+    try:
+        runtime_data.rovinieta_coordinator = await _async_setup_rovinieta_coordinator(hass, entry)
+    except Exception as err:  # noqa: BLE001
+        # Salvarea contului nu trebuie să eșueze doar pentru că portalul extern
+        # nu poate fi citit în acel moment. Contul rămâne salvat, iar scanarea
+        # manuală va afișa utilizatorului eroarea concretă când este apăsată.
+        runtime_data.rovinieta_coordinator = None
+        _LOGGER.debug("Nu am putut recrea coordonatorul rovinietei după salvarea contului: %s", err)
+
+    if runtime_data.rovinieta_coordinator is not None:
+        try:
+            await _async_sync_rovinieta_manual_terms(hass, entry, dispatch_updates=True)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Nu am putut sincroniza rovinieta după salvarea contului online: %s", err)
+
+
+async def _async_rovinieta_import_candidates(
+    hass: HomeAssistant,
+    entry: CarManagerConfigEntry,
+    *,
+    refresh: bool = True,
+) -> list[dict[str, Any]]:
+    """Returnează lista de autovehicule disponibile în conturile de rovinietă."""
+
+    runtime_data = entry.runtime_data
+    existing_vehicles = await runtime_data.vehicle_store.async_get_vehicles()
+    if not existing_vehicles:
+        existing_vehicles = list(runtime_data.all_vehicles or runtime_data.vehicles)
+
+    # Pentru import folosim o citire directă la apăsarea butonului. Așa evităm
+    # situațiile în care coordonatorul încă nu s-a recreat după salvarea contului.
+    if refresh or runtime_data.rovinieta_coordinator is None or runtime_data.rovinieta_coordinator.data is None:
+        account_data = await _async_fetch_rovinieta_account_data_direct(hass, entry)
+    else:
+        account_data = runtime_data.rovinieta_coordinator.data
+
+    if account_data is None:
+        raise HomeAssistantError("Nu există date disponibile din contul de rovinietă online.")
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rovinieta_vehicle in account_data.vehicles:
+        candidate = _rovinieta_vehicle_import_dict(rovinieta_vehicle, existing_vehicles)
+        if candidate is None:
+            continue
+        key = str(candidate.get("import_key") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+
+    candidates.sort(key=lambda item: (bool(item.get("existing")), str(item.get("license_plate") or "")))
+    return candidates
+
+
 def _vehicle_internal_id(vehicle: dict[str, Any]) -> str:
     """Funcție internă pentru vehicul intern ID."""
 
@@ -743,12 +1069,65 @@ SET_ROVINIETA_ACCOUNT_SCHEMA = vol.Schema(
         vol.Optional("entry_id"): str,
         vol.Optional(CONF_ROVINIETA_USERNAME, default=""): str,
         vol.Optional(CONF_ROVINIETA_PASSWORD, default=""): str,
+        vol.Optional(CONF_ROVINIETA_PROVIDER, default=ROVINIETA_PROVIDER_CNAIR): vol.In(ROVINIETA_PROVIDERS),
         vol.Optional(
             CONF_ROVINIETA_SCAN_INTERVAL,
             default=DEFAULT_ROVINIETA_SCAN_INTERVAL,
         ): vol.Coerce(int),
     }
 )
+
+GET_ROVINIETA_ACCOUNT_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+    }
+)
+
+SCAN_ROVINIETA_IMPORT_VEHICLES_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Optional("refresh", default=True): bool,
+    }
+)
+
+IMPORT_ROVINIETA_VEHICLE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Required("import_key"): str,
+    }
+)
+
+
+def _normalized_vehicle_identity(value: Any) -> str:
+    """Normalizează o identitate auto pentru comparații fără spații și litere mici/mari."""
+
+    return str(value or "").strip().upper().replace(" ", "").replace("-", "")
+
+
+def _find_duplicate_vehicle_identity(
+    vehicles: list[dict[str, Any]],
+    *,
+    current_vehicle_id: str,
+    license_plate: str,
+    vin: str,
+) -> str | None:
+    """Verifică dacă noul număr sau VIN aparțin altui autovehicul."""
+
+    wanted_plate = _normalized_vehicle_identity(license_plate)
+    wanted_vin = _normalized_vehicle_identity(vin)
+    for vehicle in vehicles:
+        if str(vehicle.get(CONF_VEHICLE_ID) or "") == current_vehicle_id:
+            continue
+        if vehicle.get(CONF_REMOVED):
+            continue
+        vehicle_name = str(vehicle.get(CONF_NAME) or vehicle.get(CONF_LICENSE_PLATE) or vehicle.get(CONF_VEHICLE_ID) or "alt autovehicul")
+        existing_plate = _normalized_vehicle_identity(vehicle.get(CONF_LICENSE_PLATE))
+        existing_vin = _normalized_vehicle_identity(vehicle.get(CONF_VIN))
+        if wanted_plate and existing_plate and wanted_plate == existing_plate:
+            return f"Numărul de înmatriculare este deja folosit de {vehicle_name}."
+        if wanted_vin and existing_vin and wanted_vin == existing_vin:
+            return f"VIN-ul este deja folosit de {vehicle_name}."
+    return None
 
 async def _async_register_services(hass: HomeAssistant) -> None:
     """Funcție internă pentru înregistrare services."""
@@ -757,6 +1136,7 @@ async def _async_register_services(hass: HomeAssistant) -> None:
     if (
         hass.data[DOMAIN].get("services_registered")
         and hass.services.has_service(DOMAIN, SERVICE_ADD_VEHICLE)
+        and hass.services.has_service(DOMAIN, SERVICE_EDIT_VEHICLE)
         and hass.services.has_service(DOMAIN, SERVICE_REMOVE_VEHICLE)
         and hass.services.has_service(DOMAIN, SERVICE_RESTORE_VEHICLE)
         and hass.services.has_service(DOMAIN, SERVICE_RESTORE_ALL_VEHICLES)
@@ -773,6 +1153,8 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         and hass.services.has_service(DOMAIN, SERVICE_REFRESH_LICENSE_STATUS)
         and hass.services.has_service(DOMAIN, SERVICE_SET_NOTIFICATION_OPTIONS)
         and hass.services.has_service(DOMAIN, SERVICE_SET_ROVINIETA_ACCOUNT)
+        and hass.services.has_service(DOMAIN, SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES)
+        and hass.services.has_service(DOMAIN, SERVICE_IMPORT_ROVINIETA_VEHICLE)
         and hass.services.has_service(DOMAIN, SERVICE_ADD_FUEL_RECEIPT)
         and hass.services.has_service(DOMAIN, SERVICE_UPDATE_FUEL_RECEIPT)
         and hass.services.has_service(DOMAIN, SERVICE_DELETE_FUEL_RECEIPT)
@@ -852,23 +1234,202 @@ async def _async_register_services(hass: HomeAssistant) -> None:
 
         entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
         options = dict(entry.options or {})
+        data = dict(entry.data or {})
+        stored = await _async_load_rovinieta_account_store(hass, entry)
 
         username = str(call.data.get(CONF_ROVINIETA_USERNAME) or "").strip()
         password = str(call.data.get(CONF_ROVINIETA_PASSWORD) or "")
+
+        # Portalul este ales explicit de utilizator. Dacă, din motive de
+        # compatibilitate, apelul nu trimite câmpul, păstrăm valoarea salvată
+        # anterior în opțiuni sau în data config entry.
+        provider = str(
+            call.data.get(CONF_ROVINIETA_PROVIDER)
+            or stored.get(CONF_ROVINIETA_PROVIDER)
+            or options.get(CONF_ROVINIETA_PROVIDER)
+            or data.get(CONF_ROVINIETA_PROVIDER)
+            or ROVINIETA_PROVIDER_CNAIR
+        ).strip()
+        if provider not in ROVINIETA_PROVIDERS:
+            provider = ROVINIETA_PROVIDER_CNAIR
+
         scan_interval = max(
             MIN_ROVINIETA_SCAN_INTERVAL,
             int(call.data.get(CONF_ROVINIETA_SCAN_INTERVAL) or DEFAULT_ROVINIETA_SCAN_INTERVAL),
         )
 
         options[CONF_ROVINIETA_USERNAME] = username
+        options[CONF_ROVINIETA_PROVIDER] = provider
         if password:
             options[CONF_ROVINIETA_PASSWORD] = password
         elif not username:
             options.pop(CONF_ROVINIETA_PASSWORD, None)
+        else:
+            preserved_password = (
+                stored.get(CONF_ROVINIETA_PASSWORD)
+                or options.get(CONF_ROVINIETA_PASSWORD)
+                or data.get(CONF_ROVINIETA_PASSWORD)
+            )
+            if preserved_password:
+                options[CONF_ROVINIETA_PASSWORD] = preserved_password
         options[CONF_ROVINIETA_SCAN_INTERVAL] = scan_interval
 
-        hass.config_entries.async_update_entry(entry, options=options)
-        await hass.config_entries.async_reload(entry.entry_id)
+        await _async_save_rovinieta_account_store(
+            hass,
+            entry,
+            {
+                CONF_ROVINIETA_USERNAME: options.get(CONF_ROVINIETA_USERNAME, ""),
+                CONF_ROVINIETA_PASSWORD: options.get(CONF_ROVINIETA_PASSWORD, ""),
+                CONF_ROVINIETA_PROVIDER: options.get(CONF_ROVINIETA_PROVIDER, ROVINIETA_PROVIDER_CNAIR),
+                CONF_ROVINIETA_SCAN_INTERVAL: options.get(CONF_ROVINIETA_SCAN_INTERVAL, DEFAULT_ROVINIETA_SCAN_INTERVAL),
+            },
+        )
+
+        # Persistăm contul și în `data`, și în `options`, pe lângă store-ul dedicat.
+        # În unele scenarii de reload / cache frontend, doar opțiunile pot fi citite
+        # târziu de panel. Păstrând aceleași valori în ambele locuri, statusul
+        # contului rămâne coerent după restart și după Ctrl+F5.
+        data[CONF_ROVINIETA_USERNAME] = options.get(CONF_ROVINIETA_USERNAME, "")
+        data[CONF_ROVINIETA_PROVIDER] = options.get(CONF_ROVINIETA_PROVIDER, ROVINIETA_PROVIDER_CNAIR)
+        data[CONF_ROVINIETA_SCAN_INTERVAL] = options.get(CONF_ROVINIETA_SCAN_INTERVAL, DEFAULT_ROVINIETA_SCAN_INTERVAL)
+        if options.get(CONF_ROVINIETA_PASSWORD):
+            data[CONF_ROVINIETA_PASSWORD] = options.get(CONF_ROVINIETA_PASSWORD)
+        elif not username:
+            data.pop(CONF_ROVINIETA_PASSWORD, None)
+
+        hass.config_entries.async_update_entry(entry, data=data, options=options)
+        # Nu reconstruim coordonatorul aici. Salvarea contului trebuie să fie rapidă
+        # și să nu depindă de portalul extern. Căutarea/importul citesc direct
+        # portalul selectat de utilizator.
+
+
+    async def async_get_rovinieta_account(call: ServiceCall) -> dict[str, Any]:
+        """Returnează sumarul contului de rovinietă salvat, fără parolă."""
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        options = await _async_rovinieta_account_options(hass, entry)
+
+        username = str(options.get(CONF_ROVINIETA_USERNAME) or "").strip()
+        password = str(options.get(CONF_ROVINIETA_PASSWORD) or "")
+        provider = str(options.get(CONF_ROVINIETA_PROVIDER) or ROVINIETA_PROVIDER_CNAIR).strip()
+        scan_interval = int(options.get(CONF_ROVINIETA_SCAN_INTERVAL) or DEFAULT_ROVINIETA_SCAN_INTERVAL)
+
+        return {
+            "configured": bool(username and password),
+            "username": username,
+            "has_password": bool(password),
+            "provider": provider,
+            "provider_label": "e-rovinieta.ro" if provider == ROVINIETA_PROVIDER_E_ROVINIETA else "CNAIR / erovinieta.ro",
+            "scan_interval": scan_interval,
+        }
+
+
+    async def async_scan_rovinieta_import_vehicles(call: ServiceCall) -> dict[str, Any]:
+        """Scanează conturile de rovinietă și returnează vehiculele disponibile pentru import."""
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        candidates = await _async_rovinieta_import_candidates(
+            hass,
+            entry,
+            refresh=bool(call.data.get("refresh", True)),
+        )
+        return {
+            "vehicles": candidates,
+            "count": len(candidates),
+            "importable_count": sum(1 for item in candidates if item.get("can_import")),
+            "existing_count": sum(1 for item in candidates if item.get("existing")),
+        }
+
+    async def async_import_rovinieta_vehicle(call: ServiceCall) -> dict[str, Any]:
+        """Importă un singur autovehicul selectat din contul de rovinietă."""
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        import_key = _rovinieta_plate_key(call.data.get("import_key"))
+        if not import_key:
+            raise HomeAssistantError("Cheia autovehiculului de import este obligatorie.")
+
+        candidates = await _async_rovinieta_import_candidates(hass, entry, refresh=False)
+        candidate = next((item for item in candidates if item.get("import_key") == import_key), None)
+        if candidate is None:
+            raise HomeAssistantError("Autovehiculul selectat nu mai este disponibil în contul de rovinietă.")
+
+        if candidate.get("existing"):
+            return {
+                "status": "already_exists",
+                "message": "Autovehiculul există deja în Car Manager România.",
+                "vehicle": candidate,
+            }
+
+        runtime_data = entry.runtime_data
+        stored_vehicles = await runtime_data.vehicle_store.async_get_vehicles()
+        option_vehicles = entry.options.get(CONF_VEHICLES, entry.data.get(CONF_VEHICLES, []))
+        vehicles = merge_vehicle_sources(list(option_vehicles), stored_vehicles)
+
+        # Verificăm încă o dată înainte de salvare, pentru a evita duplicatele dacă datele s-au schimbat între scanare și import.
+        existing = _find_vehicle_by_online_identity(
+            vehicles,
+            vin=str(candidate.get("vin") or ""),
+            license_plate=str(candidate.get("license_plate") or ""),
+        )
+        if existing is not None:
+            return {
+                "status": "already_exists",
+                "message": "Autovehiculul există deja în Car Manager România.",
+                "vehicle": candidate | {
+                    "existing": True,
+                    "existing_vehicle_id": str(existing.get(CONF_VEHICLE_ID) or ""),
+                    "existing_vehicle_name": str(existing.get(CONF_NAME) or ""),
+                    "can_import": False,
+                },
+            }
+
+        license_plate = str(candidate.get("license_plate") or "").strip().upper()
+        vehicle_name = f"Autovehicul {license_plate}" if license_plate else "Autovehicul importat"
+        vehicle_id = _generate_vehicle_id(vehicles, license_plate, vehicle_name)
+
+        rovinieta_term: dict[str, Any] = {}
+        if candidate.get("rovinieta_start_date"):
+            rovinieta_term[LEGAL_START_DATE] = candidate["rovinieta_start_date"]
+        if candidate.get("rovinieta_end_date"):
+            rovinieta_term[LEGAL_END_DATE] = candidate["rovinieta_end_date"]
+        if candidate.get("source"):
+            rovinieta_term[LEGAL_DATA_SOURCE] = candidate["source"]
+        if candidate.get("rovinieta_cost") is not None:
+            rovinieta_term[COST_AMOUNT] = candidate["rovinieta_cost"]
+
+        new_vehicle = {
+            CONF_VEHICLE_ID: vehicle_id,
+            CONF_NAME: vehicle_name,
+            CONF_LICENSE_PLATE: license_plate,
+            CONF_VIN: str(candidate.get("vin") or "").strip().upper(),
+            CONF_KM: 0,
+            CONF_REGISTRATION_COUNTRY: str(candidate.get("country") or "").strip(),
+            CONF_REGISTRATION_CERTIFICATE: str(candidate.get("registration_certificate") or "").strip(),
+            CONF_ROVINIETA_CATEGORY: str(candidate.get("rovinieta_category") or "").strip(),
+            CONF_FETESTI_BRIDGE_CATEGORY: str(candidate.get("fetesti_bridge_category") or "").strip(),
+            CONF_IMPORT_SOURCE: str(candidate.get("source") or "").strip(),
+            CONF_LEGAL_TERMS: {
+                LEGAL_TYPE_ROVINIETA: rovinieta_term,
+            },
+        }
+
+        vehicles.append(new_vehicle)
+        normalized_vehicles, _ = normalize_vehicles(vehicles)
+        active_vehicles = _active_vehicles(normalized_vehicles)
+        await runtime_data.vehicle_store.async_save_vehicles(normalized_vehicles)
+        runtime_data.vehicles = active_vehicles
+        runtime_data.all_vehicles = normalized_vehicles
+        dispatcher_send(hass, SIGNAL_VEHICLES_UPDATED, active_vehicles)
+
+        # Nu facem reload complet la fiecare actualizare de opțiuni, pentru că pe mobil
+    # aruncă utilizatorul în susul paginii. Coordonatorii citesc valorile actualizate
+    # la următorul refresh sau la scanarea manuală.
+
+        return {
+            "status": "imported",
+            "message": f"Autovehiculul {vehicle_name} a fost importat.",
+            "vehicle": new_vehicle,
+        }
 
 
     async def async_add_vehicle(call: ServiceCall) -> None:
@@ -916,6 +1477,80 @@ async def _async_register_services(hass: HomeAssistant) -> None:
 
         # Reîncărcăm integrarea ca Home Assistant să creeze entitățile noului autovehicul.
         await hass.config_entries.async_reload(entry.entry_id)
+
+    async def async_edit_vehicle(call: ServiceCall) -> None:
+        """Actualizează datele principale ale unui autovehicul existent.
+
+        ID-ul intern al autovehiculului rămâne neschimbat. Astfel nu se rup
+        istoricul, costurile, reviziile și entitățile deja create.
+        """
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        runtime_data = entry.runtime_data
+        vehicle_store = runtime_data.vehicle_store
+
+        vehicle_id = str(call.data[CONF_VEHICLE_ID]).strip()
+        if not vehicle_id:
+            raise HomeAssistantError("ID-ul intern al autovehiculului este obligatoriu.")
+
+        stored_vehicles = await vehicle_store.async_get_vehicles()
+        option_vehicles = entry.options.get(
+            CONF_VEHICLES,
+            entry.data.get(CONF_VEHICLES, []),
+        )
+        vehicles = merge_vehicle_sources(list(option_vehicles), stored_vehicles)
+
+        target_index: int | None = None
+        for index, vehicle in enumerate(vehicles):
+            if str(vehicle.get(CONF_VEHICLE_ID) or "") == vehicle_id:
+                target_index = index
+                break
+
+        if target_index is None:
+            raise HomeAssistantError("Autovehiculul selectat nu există în Car Manager România.")
+
+        current_vehicle = dict(vehicles[target_index])
+        new_name = str(call.data.get(CONF_NAME, current_vehicle.get(CONF_NAME, "")) or "").strip()
+        new_plate = str(call.data.get(CONF_LICENSE_PLATE, current_vehicle.get(CONF_LICENSE_PLATE, "")) or "").strip().upper()
+        new_vin = str(call.data.get(CONF_VIN, current_vehicle.get(CONF_VIN, "")) or "").strip().upper()
+
+        if not new_name:
+            raise HomeAssistantError("Numele autovehiculului este obligatoriu.")
+
+        duplicate_message = _find_duplicate_vehicle_identity(
+            vehicles,
+            current_vehicle_id=vehicle_id,
+            license_plate=new_plate,
+            vin=new_vin,
+        )
+        if duplicate_message:
+            raise HomeAssistantError(duplicate_message)
+
+        current_vehicle[CONF_NAME] = new_name
+        current_vehicle[CONF_LICENSE_PLATE] = new_plate
+        current_vehicle[CONF_VIN] = new_vin
+
+        if CONF_KM in call.data:
+            current_vehicle[CONF_KM] = max(0, int(call.data.get(CONF_KM) or 0))
+        if CONF_REGISTRATION_COUNTRY in call.data:
+            current_vehicle[CONF_REGISTRATION_COUNTRY] = str(call.data.get(CONF_REGISTRATION_COUNTRY) or "").strip()
+        if CONF_REGISTRATION_CERTIFICATE in call.data:
+            current_vehicle[CONF_REGISTRATION_CERTIFICATE] = str(call.data.get(CONF_REGISTRATION_CERTIFICATE) or "").strip().upper()
+
+        vehicles[target_index] = current_vehicle
+        normalized_vehicles, _ = normalize_vehicles(vehicles)
+        active_vehicles = _active_vehicles(normalized_vehicles)
+        await vehicle_store.async_save_vehicles(normalized_vehicles)
+        runtime_data.vehicles = active_vehicles
+        runtime_data.all_vehicles = normalized_vehicles
+        dispatcher_send(hass, SIGNAL_VEHICLES_UPDATED, active_vehicles)
+
+        _LOGGER.info(
+            "Autovehicul actualizat în Car Manager România: %s (%s)",
+            new_name,
+            new_plate or "fără număr",
+        )
+
 
     async def async_remove_vehicle(call: ServiceCall) -> None:
         """Gestionează asincron operațiunea pentru eliminare vehicul."""
@@ -1149,6 +1784,9 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             schema=SET_NOTIFICATION_OPTIONS_SCHEMA,
         )
 
+    # Înregistrăm serviciul de salvare cont separat de serviciile cu răspuns.
+    # În varianta anterioară, constantele pentru import ajunseseră accidental
+    # ca argumente în același apel async_register, ceea ce bloca încărcarea integrării.
     if not hass.services.has_service(DOMAIN, SERVICE_SET_ROVINIETA_ACCOUNT):
         hass.services.async_register(
             DOMAIN,
@@ -1157,12 +1795,50 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             schema=SET_ROVINIETA_ACCOUNT_SCHEMA,
         )
 
+    service_response_kwargs: dict[str, Any] = {}
+    if SupportsResponse is not None:
+        service_response_kwargs["supports_response"] = SupportsResponse.ONLY
+
+    if not hass.services.has_service(DOMAIN, SERVICE_GET_ROVINIETA_ACCOUNT):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GET_ROVINIETA_ACCOUNT,
+            async_get_rovinieta_account,
+            schema=GET_ROVINIETA_ACCOUNT_SCHEMA,
+            **service_response_kwargs,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES,
+            async_scan_rovinieta_import_vehicles,
+            schema=SCAN_ROVINIETA_IMPORT_VEHICLES_SCHEMA,
+            **service_response_kwargs,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_IMPORT_ROVINIETA_VEHICLE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_IMPORT_ROVINIETA_VEHICLE,
+            async_import_rovinieta_vehicle,
+            schema=IMPORT_ROVINIETA_VEHICLE_SCHEMA,
+            **service_response_kwargs,
+        )
+
     if not hass.services.has_service(DOMAIN, SERVICE_ADD_VEHICLE):
         hass.services.async_register(
             DOMAIN,
             SERVICE_ADD_VEHICLE,
             async_add_vehicle,
             schema=ADD_VEHICLE_SERVICE_SCHEMA,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_EDIT_VEHICLE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_EDIT_VEHICLE,
+            async_edit_vehicle,
+            schema=EDIT_VEHICLE_SERVICE_SCHEMA,
         )
     if not hass.services.has_service(DOMAIN, SERVICE_REMOVE_VEHICLE):
         hass.services.async_register(
@@ -1571,9 +2247,10 @@ async def _async_setup_rovinieta_coordinator(
 ) -> CarManagerRovinietaCoordinator | None:
     """Funcție internă pentru configurare rovinietă coordonator."""
 
-    options = {**dict(entry.data), **dict(entry.options)}
+    options = await _async_rovinieta_account_options(hass, entry)
     username = (options.get(CONF_ROVINIETA_USERNAME) or "").strip()
     password = options.get(CONF_ROVINIETA_PASSWORD) or ""
+    provider = str(options.get(CONF_ROVINIETA_PROVIDER) or ROVINIETA_PROVIDER_CNAIR).strip()
 
     if not username or not password:
         return None
@@ -1595,19 +2272,31 @@ async def _async_setup_rovinieta_coordinator(
         username=username,
         password=password,
     )
-    cnair_client = CnairERovinietaApiClient(
-        session,
-        username=username,
-        password=password,
-    )
+    cnair_client = None
+    if provider == ROVINIETA_PROVIDER_CNAIR:
+        # Coordonatorul folosește doar portalul selectat de utilizator.
+        # Clientul e-rovinieta.ro este păstrat pentru semnătura coordonatorului,
+        # dar este ignorat în funcție de provider.
+        cnair_client = CnairERovinietaApiClient(
+            session,
+            username=username,
+            password=password,
+        )
     coordinator = CarManagerRovinietaCoordinator(
         hass,
         client,
         scan_interval_seconds=scan_interval_seconds,
         cnair_client=cnair_client,
+        config_entry=entry,
+        provider=provider,
     )
 
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception as err:  # noqa: BLE001
+        # Integrarea trebuie să rămână funcțională și cu introducere manuală
+        # chiar dacă portalurile de rovinietă nu pot fi citite la pornire.
+        _LOGGER.debug("Coordonatorul rovinietei nu a putut face prima actualizare: %s", err)
     return coordinator
 
 

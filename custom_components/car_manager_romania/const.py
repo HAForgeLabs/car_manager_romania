@@ -5,11 +5,11 @@ from __future__ import annotations
 DOMAIN = "car_manager_romania"
 
 DEFAULT_NAME = "Car Manager România"
-VERSION = "1.1.1b15"
+VERSION = "1.1.1b21"
 
 PLATFORMS: list[str] = ["sensor", "number", "date", "text", "button"]
 
-ATTR_INTEGRATION_VERSION = "1.1.1b15"
+ATTR_INTEGRATION_VERSION = "1.1.1b21"
 
 SIGNAL_VEHICLES_UPDATED = f"{DOMAIN}_vehicles_updated"
 SIGNAL_LICENSE_UPDATED = f"{DOMAIN}_license_updated"
@@ -55,6 +55,7 @@ SERVICE_SET_ROVINIETA_ACCOUNT = "set_rovinieta_account"
 SERVICE_GET_ROVINIETA_ACCOUNT = "get_rovinieta_account"
 SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES = "scan_rovinieta_import_vehicles"
 SERVICE_IMPORT_ROVINIETA_VEHICLE = "import_rovinieta_vehicle"
+SERVICE_REFRESH_ROVINIETA_NOW = "refresh_rovinieta_now"
 SERVICE_ADD_FUEL_RECEIPT = "add_fuel_receipt"
 SERVICE_UPDATE_FUEL_RECEIPT = "update_fuel_receipt"
 SERVICE_DELETE_FUEL_RECEIPT = "delete_fuel_receipt"

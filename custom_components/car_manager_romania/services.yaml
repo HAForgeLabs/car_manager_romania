@@ -87,6 +87,31 @@ edit_vehicle:
       required: false
       selector:
         text:
+    fuel_profile:
+      name: Motorizare
+      description: Profilul de combustibil / propulsie al autovehiculului.
+      required: false
+      example: diesel
+      selector:
+        text:
+    maintenance:
+      name: Mentenanță
+      description: Dicționar cu datele de mentenanță mecanică. Folosit de dashboard pentru editarea completă.
+      required: false
+      selector:
+        object:
+    legal_terms:
+      name: Termene legale
+      description: Dicționar cu datele RCA, CASCO, ITP și rovinietă. Folosit de dashboard pentru editarea completă.
+      required: false
+      selector:
+        object:
+    consumables:
+      name: Consumabile
+      description: Dicționar cu uleiuri, filtre și alte specificații tehnice.
+      required: false
+      selector:
+        object:
 
 remove_vehicle:
   name: Dezactivează autovehicul
@@ -1520,5 +1545,16 @@ import_rovinieta_vehicle:
       name: Cheie import
       description: Cheia autovehiculului returnată de scanarea contului de rovinietă.
       required: true
+      selector:
+        text:
+
+refresh_rovinieta_now:
+  name: Actualizează rovinietele acum
+  description: Cere imediat actualizarea rovinietelor din portalul selectat în setările contului online.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Opțional. ID-ul config entry-ului Car Manager România. Se poate omite dacă există o singură instanță.
+      required: false
       selector:
         text:

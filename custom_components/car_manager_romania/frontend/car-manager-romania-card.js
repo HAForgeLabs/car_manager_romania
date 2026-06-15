@@ -1,5 +1,5 @@
 class CarManagerRomaniaCard extends HTMLElement {
-  static get version() { return "v1.1.1b15"; }
+  static get version() { return "v1.1.1b21"; }
   setConfig(config) {
     this.config = config || {};
     this._editMode = this.config.edit_mode ?? false;
@@ -5066,7 +5066,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       : summaries.filter((summary) => summary.key === this._fuelVehicleFilter);
     const payload = {
       type: "car_manager_romania_fuel_history",
-      version: "1.1.1b15",
+      version: "1.1.1b21",
       generated_at: new Date().toISOString(),
       filter: this._fuelVehicleFilter,
       vehicles: filtered.map((summary) => ({

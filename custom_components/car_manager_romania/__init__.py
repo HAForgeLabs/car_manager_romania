@@ -87,6 +87,7 @@ from .const import (
     SERVICE_GET_ROVINIETA_ACCOUNT,
     SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES,
     SERVICE_IMPORT_ROVINIETA_VEHICLE,
+    SERVICE_REFRESH_ROVINIETA_NOW,
     SERVICE_ADD_FUEL_RECEIPT,
     SERVICE_UPDATE_FUEL_RECEIPT,
     SERVICE_DELETE_FUEL_RECEIPT,
@@ -105,16 +106,27 @@ from .const import (
     STORAGE_VERSION_NOTIFICATIONS,
     FUEL_TYPES,
     FUEL_TYPES_BY_PROFILE,
+    FUEL_PROFILES,
+    CONF_CONSUMABLES,
+    CONSUMABLE_TYPES,
     MAINTENANCE_LAST_DATE,
     MAINTENANCE_LAST_KM,
+    MAINTENANCE_INTERVAL_KM,
+    MAINTENANCE_INTERVAL_DAYS,
     LEGAL_COST_TYPES,
+    LEGAL_TYPES,
+    LEGAL_START_DATE,
+    LEGAL_END_DATE,
+    RCA_TEXT_FIELDS,
+    CASCO_TEXT_FIELDS,
+    ITP_TEXT_FIELDS,
     MAINTENANCE_TYPES,
     SIGNAL_VEHICLES_UPDATED,
     SIGNAL_LICENSE_UPDATED,
     VERSION,
 )
 from .maintenance import get_maintenance_value, normalize_vehicles, set_maintenance_value
-from .legal import set_legal_ignored
+from .legal import set_legal_ignored, set_legal_value
 from .rovinieta.api import ERovinietaApiClient
 from .rovinieta.cnair_api import CnairERovinietaApiClient
 from .rovinieta.coordinator import CarManagerRovinietaCoordinator
@@ -439,7 +451,12 @@ EDIT_VEHICLE_SERVICE_SCHEMA = vol.Schema(
         vol.Optional(CONF_KM): vol.Coerce(int),
         vol.Optional(CONF_REGISTRATION_COUNTRY): str,
         vol.Optional(CONF_REGISTRATION_CERTIFICATE): str,
-    }
+        vol.Optional(CONF_FUEL_PROFILE): str,
+        vol.Optional("maintenance"): dict,
+        vol.Optional(CONF_LEGAL_TERMS): dict,
+        vol.Optional(CONF_CONSUMABLES): dict,
+    },
+    extra=vol.ALLOW_EXTRA,
 )
 
 REMOVE_VEHICLE_SERVICE_SCHEMA = vol.Schema(
@@ -479,6 +496,12 @@ CLEANUP_ORPHAN_ENTITIES_SERVICE_SCHEMA = vol.Schema(
 )
 
 REFRESH_LICENSE_STATUS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+    }
+)
+
+REFRESH_ROVINIETA_NOW_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): str,
     }
@@ -1004,6 +1027,48 @@ async def _async_reconfigure_rovinieta_coordinator(
             _LOGGER.debug("Nu am putut sincroniza rovinieta după salvarea contului online: %s", err)
 
 
+async def _async_refresh_rovinieta_now(
+    hass: HomeAssistant,
+    entry: CarManagerConfigEntry,
+) -> dict[str, Any]:
+    """Actualizează rovinietele imediat din portalul selectat în setări."""
+
+    options = await _async_rovinieta_account_options(hass, entry)
+    username = str(options.get(CONF_ROVINIETA_USERNAME) or "").strip()
+    password = str(options.get(CONF_ROVINIETA_PASSWORD) or "")
+    provider = str(options.get(CONF_ROVINIETA_PROVIDER) or ROVINIETA_PROVIDER_CNAIR).strip()
+    portal_label = "e-rovinieta.ro" if provider == ROVINIETA_PROVIDER_E_ROVINIETA else "CNAIR / erovinieta.ro"
+
+    if not username or not password:
+        raise HomeAssistantError("Contul de rovinietă online nu este configurat. Salvează utilizatorul și parola, apoi încearcă din nou.")
+
+    account_data = await _async_fetch_rovinieta_account_data_direct(hass, entry)
+    runtime_data = entry.runtime_data
+
+    coordinator = getattr(runtime_data, "rovinieta_coordinator", None)
+    if coordinator is None or getattr(coordinator, "provider", None) != provider:
+        coordinator = await _async_setup_rovinieta_coordinator(hass, entry)
+        runtime_data.rovinieta_coordinator = coordinator
+
+    if coordinator is not None:
+        coordinator.async_set_updated_data(account_data)
+
+    changed = await _async_sync_rovinieta_manual_terms(hass, entry, dispatch_updates=True)
+
+    vehicle_count = len(getattr(account_data, "vehicles", []) or [])
+    return {
+        "status": "ok",
+        "provider": provider,
+        "provider_label": portal_label,
+        "vehicles_found": vehicle_count,
+        "updated": bool(changed),
+        "message": (
+            f"Rovinietele au fost actualizate din {portal_label}. "
+            f"Vehicule găsite în cont: {vehicle_count}."
+        ),
+    }
+
+
 async def _async_rovinieta_import_candidates(
     hass: HomeAssistant,
     entry: CarManagerConfigEntry,
@@ -1155,6 +1220,7 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         and hass.services.has_service(DOMAIN, SERVICE_SET_ROVINIETA_ACCOUNT)
         and hass.services.has_service(DOMAIN, SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES)
         and hass.services.has_service(DOMAIN, SERVICE_IMPORT_ROVINIETA_VEHICLE)
+        and hass.services.has_service(DOMAIN, SERVICE_REFRESH_ROVINIETA_NOW)
         and hass.services.has_service(DOMAIN, SERVICE_ADD_FUEL_RECEIPT)
         and hass.services.has_service(DOMAIN, SERVICE_UPDATE_FUEL_RECEIPT)
         and hass.services.has_service(DOMAIN, SERVICE_DELETE_FUEL_RECEIPT)
@@ -1322,6 +1388,13 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             "provider_label": "e-rovinieta.ro" if provider == ROVINIETA_PROVIDER_E_ROVINIETA else "CNAIR / erovinieta.ro",
             "scan_interval": scan_interval,
         }
+
+
+    async def async_refresh_rovinieta_now(call: ServiceCall) -> dict[str, Any]:
+        """Actualizează imediat rovinietele din portalul selectat în setări."""
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        return await _async_refresh_rovinieta_now(hass, entry)
 
 
     async def async_scan_rovinieta_import_vehicles(call: ServiceCall) -> dict[str, Any]:
@@ -1536,6 +1609,76 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             current_vehicle[CONF_REGISTRATION_COUNTRY] = str(call.data.get(CONF_REGISTRATION_COUNTRY) or "").strip()
         if CONF_REGISTRATION_CERTIFICATE in call.data:
             current_vehicle[CONF_REGISTRATION_CERTIFICATE] = str(call.data.get(CONF_REGISTRATION_CERTIFICATE) or "").strip().upper()
+        if CONF_FUEL_PROFILE in call.data:
+            fuel_profile = str(call.data.get(CONF_FUEL_PROFILE) or "").strip()
+            if fuel_profile in FUEL_PROFILES:
+                current_vehicle[CONF_FUEL_PROFILE] = fuel_profile
+
+        # Actualizare completă din dashboard: mentenanță, termene legale și consumabile.
+        # Datele sunt transmise grupat ca dicționare, pentru a evita sute de servicii
+        # separate și pentru a păstra ID-ul intern al autovehiculului neschimbat.
+        maintenance_payload = call.data.get("maintenance")
+        if isinstance(maintenance_payload, dict):
+            for maintenance_type, values in maintenance_payload.items():
+                if maintenance_type not in MAINTENANCE_TYPES or not isinstance(values, dict):
+                    continue
+                for field in (
+                    MAINTENANCE_LAST_DATE,
+                    MAINTENANCE_LAST_KM,
+                    MAINTENANCE_INTERVAL_KM,
+                    MAINTENANCE_INTERVAL_DAYS,
+                    COST_AMOUNT,
+                ):
+                    if field not in values:
+                        continue
+                    raw_value = values.get(field)
+                    if field in (MAINTENANCE_LAST_KM, MAINTENANCE_INTERVAL_KM, MAINTENANCE_INTERVAL_DAYS):
+                        value = max(0, int(raw_value or 0))
+                    elif field == COST_AMOUNT:
+                        value = round(float(raw_value or 0), 2)
+                    else:
+                        value = str(raw_value or "").strip()
+                    set_maintenance_value(current_vehicle, str(maintenance_type), field, value)
+
+        legal_payload = call.data.get(CONF_LEGAL_TERMS)
+        legal_text_fields = {
+            "rca": RCA_TEXT_FIELDS,
+            "casco": CASCO_TEXT_FIELDS,
+            "itp": ITP_TEXT_FIELDS,
+        }
+        if isinstance(legal_payload, dict):
+            for legal_type, values in legal_payload.items():
+                if legal_type not in LEGAL_TYPES or not isinstance(values, dict):
+                    continue
+                allowed_fields = {
+                    LEGAL_START_DATE,
+                    LEGAL_END_DATE,
+                    COST_AMOUNT,
+                    *(legal_text_fields.get(str(legal_type), {}) or {}).keys(),
+                }
+                if str(legal_type) == LEGAL_TYPE_ROVINIETA:
+                    # Pentru rovinietă păstrăm explicit sursa valorii afișate.
+                    # Utilizatorul poate alege manual / CNAIR / e-rovinieta din dashboard.
+                    allowed_fields.add(LEGAL_DATA_SOURCE)
+                for field, raw_value in values.items():
+                    if field not in allowed_fields:
+                        continue
+                    if field == COST_AMOUNT:
+                        value = round(float(raw_value or 0), 2)
+                    else:
+                        value = str(raw_value or "").strip()
+                    set_legal_value(current_vehicle, str(legal_type), str(field), value)
+
+        consumables_payload = call.data.get(CONF_CONSUMABLES)
+        if isinstance(consumables_payload, dict):
+            consumables = current_vehicle.setdefault(CONF_CONSUMABLES, {})
+            if not isinstance(consumables, dict):
+                consumables = {}
+                current_vehicle[CONF_CONSUMABLES] = consumables
+            for field, raw_value in consumables_payload.items():
+                if field not in CONSUMABLE_TYPES:
+                    continue
+                consumables[str(field)] = str(raw_value or "").strip()
 
         vehicles[target_index] = current_vehicle
         normalized_vehicles, _ = normalize_vehicles(vehicles)
@@ -1823,6 +1966,15 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             SERVICE_IMPORT_ROVINIETA_VEHICLE,
             async_import_rovinieta_vehicle,
             schema=IMPORT_ROVINIETA_VEHICLE_SCHEMA,
+            **service_response_kwargs,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_ROVINIETA_NOW):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REFRESH_ROVINIETA_NOW,
+            async_refresh_rovinieta_now,
+            schema=REFRESH_ROVINIETA_NOW_SCHEMA,
             **service_response_kwargs,
         )
 

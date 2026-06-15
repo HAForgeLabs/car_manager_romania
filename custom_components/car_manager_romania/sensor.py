@@ -29,6 +29,8 @@ from .const import (
     DEFAULT_NOTIFY_EXPENSES,
     CONF_KM,
     CONF_LICENSE_PLATE,
+    CONF_LEGAL_TERMS,
+    LEGAL_DATA_SOURCE,
     LEGAL_END_DATE,
     LEGAL_OPTION_IGNORED,
     LEGAL_START_DATE,
@@ -472,6 +474,10 @@ class CarVehicleStatusSensor(CarVehicleBaseSensor):
 
         if self._vehicle.get(CONF_VIN):
             attributes[CONF_VIN] = self._vehicle[CONF_VIN]
+
+        legal_terms = self._vehicle.get(CONF_LEGAL_TERMS, {})
+        if isinstance(legal_terms, dict):
+            attributes[CONF_LEGAL_TERMS] = legal_terms
 
         # Afișăm statisticile cât mai sus în atribute, ca să poată fi verificate ușor
         # în Developer Tools fără să fie nevoie de derulare prin istoricul lung.
@@ -1063,6 +1069,11 @@ class CarVehicleLegalDaysRemainingSensor(CarVehicleBaseSensor):
                 self._legal_type,
                 LEGAL_OPTION_IGNORED,
             )),
+            "sursa_date": get_legal_value(
+                self._vehicle,
+                self._legal_type,
+                LEGAL_DATA_SOURCE,
+            ),
         }
 
 
@@ -1123,4 +1134,9 @@ class CarVehicleLegalStatusSensor(CarVehicleBaseSensor):
                 self._legal_type,
                 LEGAL_OPTION_IGNORED,
             )),
+            "sursa_date": get_legal_value(
+                self._vehicle,
+                self._legal_type,
+                LEGAL_DATA_SOURCE,
+            ),
         }

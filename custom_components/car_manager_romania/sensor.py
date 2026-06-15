@@ -27,6 +27,13 @@ from .const import (
     DEFAULT_NOTIFY_EQUIPMENT,
     DEFAULT_NOTIFY_BATTERY,
     DEFAULT_NOTIFY_EXPENSES,
+    FEATURE_OPTION_DEFAULTS,
+    CONF_VEHICLE_FEATURE_OPTIONS,
+    CONF_FEATURE_MAINTENANCE,
+    CONF_FEATURE_RCA,
+    CONF_FEATURE_CASCO,
+    CONF_FEATURE_ITP,
+    CONF_FEATURE_ROVINIETA,
     CONF_KM,
     CONF_LICENSE_PLATE,
     CONF_LEGAL_TERMS,
@@ -225,6 +232,10 @@ class CarManagerStatusSensor(CarManagerBaseSensor):
                 CONF_NOTIFY_EQUIPMENT: bool(options.get(CONF_NOTIFY_EQUIPMENT, DEFAULT_NOTIFY_EQUIPMENT)),
                 CONF_NOTIFY_BATTERY: bool(options.get(CONF_NOTIFY_BATTERY, DEFAULT_NOTIFY_BATTERY)),
                 CONF_NOTIFY_EXPENSES: bool(options.get(CONF_NOTIFY_EXPENSES, DEFAULT_NOTIFY_EXPENSES)),
+            },
+            "feature_options": {
+                key: bool(options.get(key, default))
+                for key, default in FEATURE_OPTION_DEFAULTS.items()
             },
         }
 
@@ -475,6 +486,14 @@ class CarVehicleStatusSensor(CarVehicleBaseSensor):
         if self._vehicle.get(CONF_VIN):
             attributes[CONF_VIN] = self._vehicle[CONF_VIN]
 
+        vehicle_features = self._vehicle.get(CONF_VEHICLE_FEATURE_OPTIONS, {})
+        if isinstance(vehicle_features, dict):
+            attributes[CONF_VEHICLE_FEATURE_OPTIONS] = {
+                key: bool(vehicle_features.get(key, default))
+                for key, default in FEATURE_OPTION_DEFAULTS.items()
+                if key not in ("feature_rovinieta_online", "feature_itp_online")
+            }
+
         legal_terms = self._vehicle.get(CONF_LEGAL_TERMS, {})
         if isinstance(legal_terms, dict):
             attributes[CONF_LEGAL_TERMS] = legal_terms
@@ -683,6 +702,15 @@ class CarVehicleFuelAverageConsumptionSensor(CarVehicleBaseSensor):
         return {"intervals": fuel_consumption_intervals(self._entry, self._vehicle)[:10]}
 
 
+
+def _vehicle_feature_enabled(vehicle: dict[str, Any], feature_key: str) -> bool:
+    """Verifică dacă o funcționalitate este activă pentru autovehiculul curent."""
+
+    features = vehicle.get(CONF_VEHICLE_FEATURE_OPTIONS, {})
+    if not isinstance(features, dict):
+        return True
+    return bool(features.get(feature_key, True))
+
 def _vehicle_overall_summary(vehicle: dict[str, Any]) -> dict[str, Any]:
     """Funcție internă pentru vehicul general rezumat."""
 
@@ -691,7 +719,8 @@ def _vehicle_overall_summary(vehicle: dict[str, Any]) -> dict[str, Any]:
     ok_items: list[dict[str, Any]] = []
     unknown_items: list[dict[str, Any]] = []
 
-    for maintenance_type, label in MAINTENANCE_TYPES.items():
+    if _vehicle_feature_enabled(vehicle, CONF_FEATURE_MAINTENANCE):
+      for maintenance_type, label in MAINTENANCE_TYPES.items():
         status = maintenance_status(vehicle, maintenance_type)
         km_remaining, days_remaining = maintenance_remaining_values(vehicle, maintenance_type)
         item = _build_overall_item(
@@ -713,6 +742,14 @@ def _vehicle_overall_summary(vehicle: dict[str, Any]) -> dict[str, Any]:
             unknown_items.append(item)
 
     for legal_type, label in LEGAL_TYPES.items():
+        feature_key = {
+            "rca": CONF_FEATURE_RCA,
+            LEGAL_TYPE_CASCO: CONF_FEATURE_CASCO,
+            "itp": CONF_FEATURE_ITP,
+            "rovinieta": CONF_FEATURE_ROVINIETA,
+        }.get(str(legal_type))
+        if feature_key and not _vehicle_feature_enabled(vehicle, feature_key):
+            continue
         if legal_type == LEGAL_TYPE_CASCO and is_legal_ignored(vehicle, legal_type):
             continue
 

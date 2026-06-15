@@ -41,12 +41,28 @@ from .const import (
     CONF_NOTIFY_EQUIPMENT,
     CONF_NOTIFY_BATTERY,
     CONF_NOTIFY_EXPENSES,
+    CONF_FEATURE_MAINTENANCE,
+    CONF_FEATURE_RCA,
+    CONF_FEATURE_CASCO,
+    CONF_FEATURE_ITP,
+    CONF_FEATURE_ROVINIETA,
+    CONF_FEATURE_COSTS,
+    CONF_FEATURE_STATISTICS,
+    CONF_FEATURE_FUEL,
+    CONF_FEATURE_TIRES,
+    CONF_FEATURE_EQUIPMENT,
+    CONF_FEATURE_BATTERY,
+    CONF_FEATURE_CONSUMABLES,
+    CONF_FEATURE_ROVINIETA_ONLINE,
+    CONF_FEATURE_ITP_ONLINE,
+    CONF_VEHICLE_FEATURE_OPTIONS,
     DEFAULT_NOTIFICATIONS_ENABLED,
     DEFAULT_NOTIFY_MAINTENANCE,
     DEFAULT_NOTIFY_LEGAL,
     DEFAULT_NOTIFY_EQUIPMENT,
     DEFAULT_NOTIFY_BATTERY,
     DEFAULT_NOTIFY_EXPENSES,
+    FEATURE_OPTION_DEFAULTS,
     CONF_NAME,
     CONF_REMOVED,
     CONF_ROVINIETA_PASSWORD,
@@ -69,6 +85,7 @@ from .const import (
     SERVICE_ADD_VEHICLE,
     SERVICE_EDIT_VEHICLE,
     SERVICE_REMOVE_VEHICLE,
+    SERVICE_DELETE_VEHICLE,
     SERVICE_RESTORE_VEHICLE,
     SERVICE_RESTORE_ALL_VEHICLES,
     SERVICE_ADD_SERVICE_RECORD,
@@ -83,11 +100,13 @@ from .const import (
     SERVICE_CLEANUP_ORPHAN_ENTITIES,
     SERVICE_REFRESH_LICENSE_STATUS,
     SERVICE_SET_NOTIFICATION_OPTIONS,
+    SERVICE_SET_FEATURE_OPTIONS,
     SERVICE_SET_ROVINIETA_ACCOUNT,
     SERVICE_GET_ROVINIETA_ACCOUNT,
     SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES,
     SERVICE_IMPORT_ROVINIETA_VEHICLE,
     SERVICE_REFRESH_ROVINIETA_NOW,
+    SERVICE_REFRESH_ITP_NOW,
     SERVICE_ADD_FUEL_RECEIPT,
     SERVICE_UPDATE_FUEL_RECEIPT,
     SERVICE_DELETE_FUEL_RECEIPT,
@@ -99,8 +118,10 @@ from .const import (
     LEGAL_OPTION_IGNORED,
     LEGAL_SOURCE_CNAIR_EROVINIETA,
     LEGAL_SOURCE_EROVINIETA,
+    LEGAL_SOURCE_RAR_AUTOPASS,
     LEGAL_START_DATE,
     LEGAL_TYPE_CASCO,
+    LEGAL_TYPE_ITP,
     LEGAL_TYPE_ROVINIETA,
     STORAGE_KEY_NOTIFICATIONS,
     STORAGE_VERSION_NOTIFICATIONS,
@@ -131,6 +152,7 @@ from .rovinieta.api import ERovinietaApiClient
 from .rovinieta.cnair_api import CnairERovinietaApiClient
 from .rovinieta.coordinator import CarManagerRovinietaCoordinator
 from .rovinieta.parser import merge_account_data, normalize_cnair_payload, normalize_payload
+from .itp_api import ItpAutopassClient
 from .storage import CarManagerFuelReceiptStore, CarManagerServiceHistoryStore, CarManagerVehicleStore, merge_vehicle_sources
 from .tire import CarManagerTireSetStore
 from .equipment import CarManagerEquipmentItemStore
@@ -438,6 +460,9 @@ ADD_VEHICLE_SERVICE_SCHEMA = vol.Schema(
         vol.Optional(CONF_LICENSE_PLATE, default=""): str,
         vol.Optional(CONF_VIN, default=""): str,
         vol.Optional(CONF_KM, default=0): vol.Coerce(int),
+        vol.Optional(CONF_REGISTRATION_COUNTRY, default=""): str,
+        vol.Optional(CONF_REGISTRATION_CERTIFICATE, default=""): str,
+        vol.Optional(CONF_FUEL_PROFILE, default=""): str,
     }
 )
 
@@ -455,11 +480,19 @@ EDIT_VEHICLE_SERVICE_SCHEMA = vol.Schema(
         vol.Optional("maintenance"): dict,
         vol.Optional(CONF_LEGAL_TERMS): dict,
         vol.Optional(CONF_CONSUMABLES): dict,
+        vol.Optional(CONF_VEHICLE_FEATURE_OPTIONS): dict,
     },
     extra=vol.ALLOW_EXTRA,
 )
 
 REMOVE_VEHICLE_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Required(CONF_VEHICLE_ID): str,
+    }
+)
+
+DELETE_VEHICLE_SERVICE_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): str,
         vol.Required(CONF_VEHICLE_ID): str,
@@ -504,6 +537,13 @@ REFRESH_LICENSE_STATUS_SCHEMA = vol.Schema(
 REFRESH_ROVINIETA_NOW_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): str,
+    }
+)
+
+REFRESH_ITP_NOW_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Optional(CONF_VEHICLE_ID): str,
     }
 )
 
@@ -1069,6 +1109,108 @@ async def _async_refresh_rovinieta_now(
     }
 
 
+
+
+async def _async_refresh_itp_now(
+    hass: HomeAssistant,
+    entry: CarManagerConfigEntry,
+    *,
+    vehicle_id: str | None = None,
+) -> dict[str, Any]:
+    """Verifică online ITP-ul prin RAR AutoPass și actualizează mașinile găsite."""
+
+    runtime_data = entry.runtime_data
+    vehicle_store = runtime_data.vehicle_store
+    stored_vehicles = await vehicle_store.async_get_vehicles()
+    option_vehicles = entry.options.get(CONF_VEHICLES, entry.data.get(CONF_VEHICLES, []))
+    vehicles = merge_vehicle_sources(list(option_vehicles), stored_vehicles)
+
+    target_vehicle_id = str(vehicle_id or "").strip()
+    session = async_get_clientsession(hass)
+    client = ItpAutopassClient(session)
+
+    updated_count = 0
+    checked_count = 0
+    skipped_count = 0
+    results: list[dict[str, Any]] = []
+    updated_vehicles: list[dict[str, Any]] = []
+
+    for vehicle in vehicles:
+        if not isinstance(vehicle, dict):
+            continue
+        current = dict(vehicle)
+        current_vehicle_id = str(current.get(CONF_VEHICLE_ID) or "").strip()
+
+        if target_vehicle_id and current_vehicle_id != target_vehicle_id:
+            updated_vehicles.append(current)
+            continue
+
+        if bool(current.get(CONF_REMOVED)):
+            updated_vehicles.append(current)
+            skipped_count += 1
+            continue
+
+        vin = str(current.get(CONF_VIN) or "").strip().upper()
+        if not vin:
+            skipped_count += 1
+            results.append({
+                "vehicle_id": current_vehicle_id,
+                "name": str(current.get(CONF_NAME) or ""),
+                "status": "skipped",
+                "message": "VIN lipsă.",
+            })
+            updated_vehicles.append(current)
+            continue
+
+        checked_count += 1
+        result = await client.async_check_itp(vin)
+        result_item = {
+            "vehicle_id": current_vehicle_id,
+            "name": str(current.get(CONF_NAME) or ""),
+            "vin": vin,
+            "status": "ok" if result.ok else "error",
+            "expires_at": result.expires_at,
+            "source": LEGAL_SOURCE_RAR_AUTOPASS if result.ok and result.expires_at else "",
+            "message": result.message,
+        }
+        results.append(result_item)
+
+        if result.ok and result.expires_at:
+            set_legal_value(current, LEGAL_TYPE_ITP, LEGAL_END_DATE, result.expires_at)
+            set_legal_value(current, LEGAL_TYPE_ITP, LEGAL_DATA_SOURCE, LEGAL_SOURCE_RAR_AUTOPASS)
+            updated_count += 1
+
+        updated_vehicles.append(current)
+
+    if target_vehicle_id and checked_count == 0 and skipped_count == 0:
+        raise HomeAssistantError("Autovehiculul selectat nu a fost găsit pentru verificarea ITP.")
+
+    if updated_count:
+        normalized_vehicles, _ = normalize_vehicles(updated_vehicles)
+        active_vehicles = _active_vehicles(normalized_vehicles)
+        await vehicle_store.async_save_vehicles(normalized_vehicles)
+        runtime_data.vehicles = active_vehicles
+        runtime_data.all_vehicles = normalized_vehicles
+        dispatcher_send(hass, SIGNAL_VEHICLES_UPDATED, active_vehicles)
+
+    if checked_count == 0:
+        message = "Nu am găsit autovehicule cu VIN completat pentru verificarea ITP."
+    elif updated_count:
+        message = f"ITP verificat online prin RAR AutoPass. Actualizate: {updated_count} din {checked_count} vehicule verificate."
+    else:
+        message = "Am verificat ITP-ul online, dar nu am putut actualiza nicio dată de expirare."
+
+    return {
+        "status": "ok" if updated_count else "partial",
+        "source": LEGAL_SOURCE_RAR_AUTOPASS,
+        "checked": checked_count,
+        "updated": updated_count,
+        "skipped": skipped_count,
+        "results": results,
+        "message": message,
+    }
+
+
 async def _async_rovinieta_import_candidates(
     hass: HomeAssistant,
     entry: CarManagerConfigEntry,
@@ -1126,6 +1268,13 @@ SET_NOTIFICATION_OPTIONS_SCHEMA = vol.Schema(
         vol.Optional(CONF_NOTIFY_EQUIPMENT): bool,
         vol.Optional(CONF_NOTIFY_BATTERY): bool,
         vol.Optional(CONF_NOTIFY_EXPENSES): bool,
+    }
+)
+
+SET_FEATURE_OPTIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        **{vol.Optional(key): bool for key in FEATURE_OPTION_DEFAULTS},
     }
 )
 
@@ -1217,10 +1366,12 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         and hass.services.has_service(DOMAIN, SERVICE_CLEANUP_ORPHAN_ENTITIES)
         and hass.services.has_service(DOMAIN, SERVICE_REFRESH_LICENSE_STATUS)
         and hass.services.has_service(DOMAIN, SERVICE_SET_NOTIFICATION_OPTIONS)
+        and hass.services.has_service(DOMAIN, SERVICE_SET_FEATURE_OPTIONS)
         and hass.services.has_service(DOMAIN, SERVICE_SET_ROVINIETA_ACCOUNT)
         and hass.services.has_service(DOMAIN, SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES)
         and hass.services.has_service(DOMAIN, SERVICE_IMPORT_ROVINIETA_VEHICLE)
         and hass.services.has_service(DOMAIN, SERVICE_REFRESH_ROVINIETA_NOW)
+        and hass.services.has_service(DOMAIN, SERVICE_REFRESH_ITP_NOW)
         and hass.services.has_service(DOMAIN, SERVICE_ADD_FUEL_RECEIPT)
         and hass.services.has_service(DOMAIN, SERVICE_UPDATE_FUEL_RECEIPT)
         and hass.services.has_service(DOMAIN, SERVICE_DELETE_FUEL_RECEIPT)
@@ -1290,6 +1441,34 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             await async_check_maintenance_notifications(hass, entry)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Nu am putut reevalua notificările după actualizarea setărilor: %s", err)
+
+    async def async_set_feature_options(call: ServiceCall) -> None:
+        """Actualizează opțiunile de afișare a funcționalităților."""
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        options = dict(entry.options or {})
+
+        changed = False
+        for key, default in FEATURE_OPTION_DEFAULTS.items():
+            if key not in call.data:
+                continue
+            value = bool(call.data.get(key, default))
+            if bool(options.get(key, default)) != value:
+                options[key] = value
+                changed = True
+
+        if not changed:
+            return
+
+        hass.config_entries.async_update_entry(entry, options=options)
+
+        try:
+            from .notify import async_check_maintenance_notifications
+
+            await async_check_maintenance_notifications(hass, entry)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Nu am putut reevalua notificările după actualizarea afișării funcționalităților: %s", err)
+
 
     async def async_set_rovinieta_account(call: ServiceCall) -> None:
         """Actualizează contul online de rovinietă din dashboard sau servicii.
@@ -1397,6 +1576,17 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         return await _async_refresh_rovinieta_now(hass, entry)
 
 
+    async def async_refresh_itp_now(call: ServiceCall) -> dict[str, Any]:
+        """Verifică ITP-ul online prin RAR AutoPass și actualizează datele găsite."""
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        return await _async_refresh_itp_now(
+            hass,
+            entry,
+            vehicle_id=call.data.get(CONF_VEHICLE_ID),
+        )
+
+
     async def async_scan_rovinieta_import_vehicles(call: ServiceCall) -> dict[str, Any]:
         """Scanează conturile de rovinietă și returnează vehiculele disponibile pentru import."""
 
@@ -1494,14 +1684,21 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         runtime_data.all_vehicles = normalized_vehicles
         dispatcher_send(hass, SIGNAL_VEHICLES_UPDATED, active_vehicles)
 
-        # Nu facem reload complet la fiecare actualizare de opțiuni, pentru că pe mobil
-    # aruncă utilizatorul în susul paginii. Coordonatorii citesc valorile actualizate
-    # la următorul refresh sau la scanarea manuală.
+        # Pentru un autovehicul nou nu este suficientă actualizarea datelor din store.
+        # Home Assistant creează dispozitivele și entitățile aferente doar la setup-ul
+        # platformelor, la fel ca în fluxul clasic „Adaugă autovehicul”. De aceea
+        # programăm un reload după ce serviciul întoarce răspunsul către dashboard.
+        async def _async_reload_after_import() -> None:
+            await asyncio.sleep(0.2)
+            await hass.config_entries.async_reload(entry.entry_id)
+
+        hass.async_create_task(_async_reload_after_import())
 
         return {
             "status": "imported",
-            "message": f"Autovehiculul {vehicle_name} a fost importat.",
+            "message": f"Autovehiculul {vehicle_name} a fost importat. Integrarea se reîncarcă pentru crearea dispozitivului și entităților.",
             "vehicle": new_vehicle,
+            "reload_scheduled": True,
         }
 
 
@@ -1522,18 +1719,36 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         license_plate = str(call.data.get(CONF_LICENSE_PLATE, "")).strip().upper()
         vin = str(call.data.get(CONF_VIN, "")).strip().upper()
         km = max(0, int(call.data.get(CONF_KM, 0) or 0))
+        registration_country = str(call.data.get(CONF_REGISTRATION_COUNTRY, "")).strip()
+        registration_certificate = str(call.data.get(CONF_REGISTRATION_CERTIFICATE, "")).strip().upper()
+        fuel_profile = str(call.data.get(CONF_FUEL_PROFILE, "")).strip()
+
+        duplicate_message = _find_duplicate_vehicle_identity(
+            current_vehicles,
+            current_vehicle_id="",
+            license_plate=license_plate,
+            vin=vin,
+        )
+        if duplicate_message:
+            raise HomeAssistantError(duplicate_message)
 
         vehicle_id = _generate_vehicle_id(current_vehicles, license_plate, vehicle_name)
+        new_vehicle = {
+            CONF_VEHICLE_ID: vehicle_id,
+            CONF_NAME: vehicle_name,
+            CONF_LICENSE_PLATE: license_plate,
+            CONF_VIN: vin,
+            CONF_KM: km,
+        }
+        if registration_country:
+            new_vehicle[CONF_REGISTRATION_COUNTRY] = registration_country
+        if registration_certificate:
+            new_vehicle[CONF_REGISTRATION_CERTIFICATE] = registration_certificate
+        if fuel_profile in FUEL_PROFILES:
+            new_vehicle[CONF_FUEL_PROFILE] = fuel_profile
+
         vehicles = list(current_vehicles)
-        vehicles.append(
-            {
-                CONF_VEHICLE_ID: vehicle_id,
-                CONF_NAME: vehicle_name,
-                CONF_LICENSE_PLATE: license_plate,
-                CONF_VIN: vin,
-                CONF_KM: km,
-            }
-        )
+        vehicles.append(new_vehicle)
 
         normalized_vehicles, _ = normalize_vehicles(vehicles)
         active_vehicles = _active_vehicles(normalized_vehicles)
@@ -1656,9 +1871,9 @@ async def _async_register_services(hass: HomeAssistant) -> None:
                     COST_AMOUNT,
                     *(legal_text_fields.get(str(legal_type), {}) or {}).keys(),
                 }
-                if str(legal_type) == LEGAL_TYPE_ROVINIETA:
-                    # Pentru rovinietă păstrăm explicit sursa valorii afișate.
-                    # Utilizatorul poate alege manual / CNAIR / e-rovinieta din dashboard.
+                if str(legal_type) in (LEGAL_TYPE_ROVINIETA, LEGAL_TYPE_ITP):
+                    # Pentru rovinietă și ITP păstrăm explicit sursa valorii afișate.
+                    # Utilizatorul poate alege manual sau sursa online din dashboard.
                     allowed_fields.add(LEGAL_DATA_SOURCE)
                 for field, raw_value in values.items():
                     if field not in allowed_fields:
@@ -1680,6 +1895,19 @@ async def _async_register_services(hass: HomeAssistant) -> None:
                     continue
                 consumables[str(field)] = str(raw_value or "").strip()
 
+        vehicle_features_payload = call.data.get(CONF_VEHICLE_FEATURE_OPTIONS)
+        if isinstance(vehicle_features_payload, dict):
+            current_features = current_vehicle.setdefault(CONF_VEHICLE_FEATURE_OPTIONS, {})
+            if not isinstance(current_features, dict):
+                current_features = {}
+                current_vehicle[CONF_VEHICLE_FEATURE_OPTIONS] = current_features
+            for key, default in FEATURE_OPTION_DEFAULTS.items():
+                if key in (CONF_FEATURE_ROVINIETA_ONLINE, CONF_FEATURE_ITP_ONLINE):
+                    continue
+                if key not in vehicle_features_payload:
+                    continue
+                current_features[key] = bool(vehicle_features_payload.get(key, default))
+
         vehicles[target_index] = current_vehicle
         normalized_vehicles, _ = normalize_vehicles(vehicles)
         active_vehicles = _active_vehicles(normalized_vehicles)
@@ -1693,6 +1921,92 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             new_name,
             new_plate or "fără număr",
         )
+
+
+    async def _async_cleanup_deleted_vehicle_registry(entry: CarManagerConfigEntry, vehicle_id: str) -> None:
+        """Curăță registry-ul Home Assistant pentru un autovehicul șters definitiv.
+
+        Ștergerea definitivă elimină datele din store. Pentru ca Home Assistant să nu lase
+        în urmă entități vechi, curățăm explicit entitățile care au unique_id-ul bazat pe
+        entry_id + vehicle_id și apoi încercăm să eliminăm dispozitivul aferent.
+        """
+
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+
+        entity_registry = er.async_get(hass)
+        unique_prefix = f"{entry.entry_id}_{vehicle_id}"
+        removed_entities: list[str] = []
+
+        for registry_entry in list(er.async_entries_for_config_entry(entity_registry, entry.entry_id)):
+            unique_id = str(getattr(registry_entry, "unique_id", "") or "")
+            entity_id = str(getattr(registry_entry, "entity_id", "") or "")
+            if not entity_id:
+                continue
+            if unique_id == unique_prefix or unique_id.startswith(f"{unique_prefix}_"):
+                entity_registry.async_remove(entity_id)
+                removed_entities.append(entity_id)
+
+        try:
+            device_registry = dr.async_get(hass)
+            device_entry = device_registry.async_get_device({(DOMAIN, vehicle_id)})
+            if device_entry is not None:
+                device_registry.async_remove_device(device_entry.id)
+        except Exception as err:  # noqa: BLE001 - compatibilitate defensivă între versiuni HA
+            _LOGGER.debug(
+                "Nu am putut elimina dispozitivul %s din device registry: %s",
+                vehicle_id,
+                err,
+            )
+
+        if removed_entities:
+            _LOGGER.info(
+                "Car Manager România: entități eliminate definitiv pentru %s: %s",
+                vehicle_id,
+                ", ".join(removed_entities),
+            )
+
+    async def _async_delete_vehicle_related_data(runtime_data: CarManagerRuntimeData, vehicle_id: str) -> dict[str, int]:
+        """Șterge datele auxiliare asociate unui autovehicul.
+
+        Datele din modulele separate sunt păstrate în store-uri dedicate, deci ștergerea
+        definitivă a vehiculului trebuie să curețe și istoricul, bonurile, anvelopele,
+        dotările și bateriile aferente acelui vehicle_id.
+        """
+
+        deleted: dict[str, int] = {}
+
+        records = await runtime_data.service_history_store.async_get_records()
+        remaining_records = [record for record in records if str(record.get(CONF_VEHICLE_ID, "")) != vehicle_id]
+        if len(remaining_records) != len(records):
+            await runtime_data.service_history_store.async_save_records(remaining_records)
+            deleted["history"] = len(records) - len(remaining_records)
+
+        receipts = await runtime_data.fuel_receipt_store.async_get_receipts()
+        remaining_receipts = [receipt for receipt in receipts if str(receipt.get(CONF_VEHICLE_ID, "")) != vehicle_id]
+        if len(remaining_receipts) != len(receipts):
+            await runtime_data.fuel_receipt_store.async_save_receipts(remaining_receipts)
+            deleted["fuel_receipts"] = len(receipts) - len(remaining_receipts)
+
+        tire_sets = await runtime_data.tire_set_store.async_get_sets()
+        remaining_tire_sets = [item for item in tire_sets if str(item.get(CONF_VEHICLE_ID, "")) != vehicle_id]
+        if len(remaining_tire_sets) != len(tire_sets):
+            await runtime_data.tire_set_store.async_save_sets(remaining_tire_sets)
+            deleted["tire_sets"] = len(tire_sets) - len(remaining_tire_sets)
+
+        equipment_items = await runtime_data.equipment_item_store.async_get_items()
+        remaining_equipment_items = [item for item in equipment_items if str(item.get(CONF_VEHICLE_ID, "")) != vehicle_id]
+        if len(remaining_equipment_items) != len(equipment_items):
+            await runtime_data.equipment_item_store.async_save_items(remaining_equipment_items)
+            deleted["equipment_items"] = len(equipment_items) - len(remaining_equipment_items)
+
+        battery_items = await runtime_data.battery_store.async_get_items()
+        remaining_battery_items = [item for item in battery_items if str(item.get(CONF_VEHICLE_ID, "")) != vehicle_id]
+        if len(remaining_battery_items) != len(battery_items):
+            await runtime_data.battery_store.async_save_items(remaining_battery_items)
+            deleted["battery_items"] = len(battery_items) - len(remaining_battery_items)
+
+        return deleted
 
 
     async def async_remove_vehicle(call: ServiceCall) -> None:
@@ -1740,6 +2054,58 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         )
 
         # Reîncărcăm integrarea ca Home Assistant să elimine entitățile autovehiculului din runtime.
+        await hass.config_entries.async_reload(entry.entry_id)
+
+
+    async def async_delete_vehicle(call: ServiceCall) -> None:
+        """Șterge definitiv un autovehicul și datele lui asociate."""
+
+        entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
+        runtime_data = entry.runtime_data
+        vehicle_store = runtime_data.vehicle_store
+
+        vehicle_id = str(call.data[CONF_VEHICLE_ID]).strip()
+        if not vehicle_id:
+            raise HomeAssistantError("ID-ul intern al autovehiculului este obligatoriu.")
+
+        stored_vehicles = await vehicle_store.async_get_vehicles()
+        option_vehicles = entry.options.get(
+            CONF_VEHICLES,
+            entry.data.get(CONF_VEHICLES, []),
+        )
+        vehicles = merge_vehicle_sources(list(option_vehicles), stored_vehicles)
+
+        found_vehicle: dict[str, Any] | None = None
+        updated_vehicles: list[dict[str, Any]] = []
+        for vehicle in vehicles:
+            if not isinstance(vehicle, dict):
+                continue
+            if str(vehicle.get(CONF_VEHICLE_ID, "")) == vehicle_id:
+                found_vehicle = vehicle
+                continue
+            updated_vehicles.append(dict(vehicle))
+
+        if found_vehicle is None:
+            raise HomeAssistantError("Autovehiculul selectat nu a fost găsit în Car Manager România.")
+
+        deleted_related = await _async_delete_vehicle_related_data(runtime_data, vehicle_id)
+
+        normalized_vehicles, _ = normalize_vehicles(updated_vehicles)
+        active_vehicles = _active_vehicles(normalized_vehicles)
+        await vehicle_store.async_save_vehicles(normalized_vehicles)
+        runtime_data.vehicles = active_vehicles
+        runtime_data.all_vehicles = normalized_vehicles
+        dispatcher_send(hass, SIGNAL_VEHICLES_UPDATED, active_vehicles)
+
+        await _async_cleanup_deleted_vehicle_registry(entry, vehicle_id)
+
+        _LOGGER.warning(
+            "Autovehicul șters definitiv din Car Manager România: %s (%s). Date auxiliare șterse: %s",
+            found_vehicle.get(CONF_NAME, vehicle_id),
+            vehicle_id,
+            deleted_related or "fără date auxiliare",
+        )
+
         await hass.config_entries.async_reload(entry.entry_id)
 
     async def async_restore_vehicle(call: ServiceCall) -> None:
@@ -1927,6 +2293,14 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             schema=SET_NOTIFICATION_OPTIONS_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_FEATURE_OPTIONS):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_FEATURE_OPTIONS,
+            async_set_feature_options,
+            schema=SET_FEATURE_OPTIONS_SCHEMA,
+        )
+
     # Înregistrăm serviciul de salvare cont separat de serviciile cu răspuns.
     # În varianta anterioară, constantele pentru import ajunseseră accidental
     # ca argumente în același apel async_register, ceea ce bloca încărcarea integrării.
@@ -1978,6 +2352,15 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             **service_response_kwargs,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_ITP_NOW):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REFRESH_ITP_NOW,
+            async_refresh_itp_now,
+            schema=REFRESH_ITP_NOW_SCHEMA,
+            **service_response_kwargs,
+        )
+
     if not hass.services.has_service(DOMAIN, SERVICE_ADD_VEHICLE):
         hass.services.async_register(
             DOMAIN,
@@ -1998,6 +2381,13 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             SERVICE_REMOVE_VEHICLE,
             async_remove_vehicle,
             schema=REMOVE_VEHICLE_SERVICE_SCHEMA,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_DELETE_VEHICLE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_DELETE_VEHICLE,
+            async_delete_vehicle,
+            schema=DELETE_VEHICLE_SERVICE_SCHEMA,
         )
     if not hass.services.has_service(DOMAIN, SERVICE_RESTORE_VEHICLE):
         hass.services.async_register(

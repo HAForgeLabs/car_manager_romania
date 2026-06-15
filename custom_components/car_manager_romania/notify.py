@@ -24,6 +24,20 @@ from .const import (
     DEFAULT_NOTIFY_EXPENSES,
     DEFAULT_NOTIFY_LEGAL,
     DEFAULT_NOTIFY_MAINTENANCE,
+    FEATURE_OPTION_DEFAULTS,
+    CONF_FEATURE_MAINTENANCE,
+    CONF_FEATURE_RCA,
+    CONF_FEATURE_CASCO,
+    CONF_FEATURE_ITP,
+    CONF_FEATURE_ROVINIETA,
+    CONF_FEATURE_COSTS,
+    CONF_FEATURE_EQUIPMENT,
+    CONF_FEATURE_BATTERY,
+    CONF_FEATURE_STATISTICS,
+    CONF_FEATURE_FUEL,
+    CONF_FEATURE_TIRES,
+    CONF_FEATURE_CONSUMABLES,
+    CONF_VEHICLE_FEATURE_OPTIONS,
     LEGAL_STATUS_EXPIRED,
     LEGAL_STATUS_SOON,
     LEGAL_STATUS_UNKNOWN,
@@ -99,6 +113,40 @@ def _notify_expenses_enabled(entry: CarManagerConfigEntry) -> bool:
 
     return _option_enabled(entry, CONF_NOTIFY_EXPENSES, DEFAULT_NOTIFY_EXPENSES)
 
+
+def _feature_enabled(
+    entry: CarManagerConfigEntry,
+    key: str,
+) -> bool:
+    """Verifică dacă o funcționalitate este activă pentru UI/notificări."""
+
+    return bool((entry.options or {}).get(key, FEATURE_OPTION_DEFAULTS.get(key, True)))
+
+
+def _vehicle_feature_enabled(
+    entry: CarManagerConfigEntry,
+    vehicle: dict[str, Any],
+    key: str,
+) -> bool:
+    """Verifică funcționalitatea atât global, cât și pentru autovehiculul curent."""
+
+    if not _feature_enabled(entry, key):
+        return False
+    features = vehicle.get(CONF_VEHICLE_FEATURE_OPTIONS, {})
+    if not isinstance(features, dict):
+        return True
+    return bool(features.get(key, True))
+
+
+def _legal_feature_key(legal_type: str) -> str | None:
+    """Întoarce cheia de afișare pentru un termen legal."""
+
+    return {
+        "rca": CONF_FEATURE_RCA,
+        LEGAL_TYPE_CASCO: CONF_FEATURE_CASCO,
+        "itp": CONF_FEATURE_ITP,
+        "rovinieta": CONF_FEATURE_ROVINIETA,
+    }.get(str(legal_type))
 
 def _safe_key(value: str) -> str:
     """Funcție internă pentru safe cheie."""
@@ -285,7 +333,7 @@ def _build_vehicle_issue_summary(
     critical_items: list[dict[str, Any]] = []
     warning_items: list[dict[str, Any]] = []
 
-    if _notify_maintenance_enabled(entry):
+    if _notify_maintenance_enabled(entry) and _vehicle_feature_enabled(entry, vehicle, CONF_FEATURE_MAINTENANCE):
         for maintenance_type, maintenance_label in MAINTENANCE_TYPES.items():
             status = maintenance_status(vehicle, maintenance_type)
             if status in (MAINTENANCE_STATUS_OK, MAINTENANCE_STATUS_UNKNOWN):
@@ -317,6 +365,9 @@ def _build_vehicle_issue_summary(
 
     if _notify_legal_enabled(entry):
         for legal_type, legal_label in LEGAL_TYPES.items():
+            feature_key = _legal_feature_key(legal_type)
+            if feature_key and not _vehicle_feature_enabled(entry, vehicle, feature_key):
+                continue
             if legal_type == LEGAL_TYPE_CASCO and is_legal_ignored(vehicle, legal_type):
                 continue
 
@@ -344,17 +395,17 @@ def _build_vehicle_issue_summary(
             else:
                 warning_items.append(item)
 
-    if _notify_equipment_enabled(entry):
+    if _notify_equipment_enabled(entry) and _vehicle_feature_enabled(entry, vehicle, CONF_FEATURE_EQUIPMENT):
         equipment_critical, equipment_warning = equipment_issues_for_vehicle(entry, vehicle)
         critical_items.extend(equipment_critical)
         warning_items.extend(equipment_warning)
 
-    if _notify_battery_enabled(entry):
+    if _notify_battery_enabled(entry) and _vehicle_feature_enabled(entry, vehicle, CONF_FEATURE_BATTERY):
         battery_critical, battery_warning = battery_issues_for_vehicle(entry, vehicle)
         critical_items.extend(battery_critical)
         warning_items.extend(battery_warning)
 
-    rovinieta_vehicle = _find_rovinieta_vehicle(entry, vehicle) if _notify_legal_enabled(entry) else None
+    rovinieta_vehicle = _find_rovinieta_vehicle(entry, vehicle) if (_notify_legal_enabled(entry) and _vehicle_feature_enabled(entry, vehicle, CONF_FEATURE_ROVINIETA)) else None
     if rovinieta_vehicle is not None:
         current_rovinieta_status = _rovinieta_status(rovinieta_vehicle)
         if current_rovinieta_status not in ("validă", "necunoscut"):
@@ -659,7 +710,7 @@ async def async_check_maintenance_notifications(
 
         expenses_key = _expenses_notification_key(vehicle_id)
         expenses_notification_id = _expenses_notification_id(vehicle_id)
-        if not _notify_expenses_enabled(entry):
+        if not _notify_expenses_enabled(entry) or not _vehicle_feature_enabled(entry, vehicle, CONF_FEATURE_COSTS):
             await _clear_notification(hass, store, expenses_key, expenses_notification_id)
             continue
 

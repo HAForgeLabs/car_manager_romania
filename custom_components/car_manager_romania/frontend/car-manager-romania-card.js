@@ -1,5 +1,5 @@
 class CarManagerRomaniaCard extends HTMLElement {
-  static get version() { return "v1.1.1b21"; }
+  static get version() { return "v1.2.2"; }
   setConfig(config) {
     this.config = config || {};
     this._editMode = this.config.edit_mode ?? false;
@@ -523,6 +523,66 @@ class CarManagerRomaniaCard extends HTMLElement {
     `;
   }
 
+
+
+  _featureOptionDefinitions() {
+    return [
+      ["feature_maintenance", "Mentenanță / revizii"],
+      ["feature_rca", "RCA"],
+      ["feature_casco", "CASCO"],
+      ["feature_itp", "ITP"],
+      ["feature_rovinieta", "Rovinietă"],
+      ["feature_costs", "Costuri"],
+      ["feature_statistics", "Statistici"],
+      ["feature_fuel", "Combustibil"],
+      ["feature_tires", "Anvelope"],
+      ["feature_equipment", "Dotări"],
+      ["feature_battery", "Baterie"],
+      ["feature_consumables", "Consumabile"],
+      ["feature_rovinieta_online", "Rovinietă online"],
+      ["feature_itp_online", "Verificare ITP online"],
+    ];
+  }
+
+  _defaultFeatureOptions() {
+    return Object.fromEntries(this._featureOptionDefinitions().map(([key]) => [key, true]));
+  }
+
+  _currentFeatureOptions() {
+    const defaults = this._defaultFeatureOptions();
+    for (const stateObj of Object.values(this._hass?.states || {})) {
+      const options = stateObj?.attributes?.feature_options;
+      if (!options || typeof options !== "object") continue;
+      const normalized = { ...defaults };
+      this._featureOptionDefinitions().forEach(([key]) => {
+        if (Object.prototype.hasOwnProperty.call(options, key)) {
+          normalized[key] = Boolean(options[key]);
+        }
+      });
+      return normalized;
+    }
+    return defaults;
+  }
+
+  _featureEnabled(key) {
+    return Boolean(this._currentFeatureOptions()[key]);
+  }
+
+  _vehicleFeatureOptions(vehicle) {
+    const defaults = Object.fromEntries(this._featureOptionDefinitions().filter(([key]) => !["feature_rovinieta_online", "feature_itp_online"].includes(key)).map(([key]) => [key, true]));
+    const raw = vehicle?.attrs?.vehicle_feature_options || vehicle?.vehicle_feature_options || {};
+    if (!raw || typeof raw !== "object") return defaults;
+    const normalized = { ...defaults };
+    Object.keys(defaults).forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(raw, key)) normalized[key] = Boolean(raw[key]);
+    });
+    return normalized;
+  }
+
+  _vehicleFeatureEnabled(vehicle, key) {
+    if (!key) return true;
+    return this._featureEnabled(key) && Boolean(this._vehicleFeatureOptions(vehicle)[key]);
+  }
 
   _notificationOptionDefinitions() {
     return [
@@ -2192,17 +2252,17 @@ class CarManagerRomaniaCard extends HTMLElement {
     const expanded = this._showDetails || this._expandedVehicles.has(vehicle.key);
     const premiumAccess = this._licenseAllowsPremiumFeatures();
     const detailsHtml = premiumAccess
-      ? `${this._renderMaintenance(vehicle)}${this._renderFuelMini(vehicle)}${this._renderVehicleStatistics(vehicle)}${this._renderTireMini(vehicle)}${this._renderConsumables(vehicle)}${this._renderServiceHistory(vehicle)}${this._showDetails ? this._renderRovinietaDetails(vehicle) : ""}`
-      : `${this._renderMaintenance(vehicle)}${this._renderLegalDetails(summary)}${this._renderRovinietaDetails(vehicle)}${this._renderFreeModeNotice()}`;
+      ? `${this._vehicleFeatureEnabled(vehicle, "feature_maintenance") ? this._renderMaintenance(vehicle) : ""}${this._vehicleFeatureEnabled(vehicle, "feature_fuel") ? this._renderFuelMini(vehicle) : ""}${this._vehicleFeatureEnabled(vehicle, "feature_statistics") ? this._renderVehicleStatistics(vehicle) : ""}${this._vehicleFeatureEnabled(vehicle, "feature_tires") ? this._renderTireMini(vehicle) : ""}${this._vehicleFeatureEnabled(vehicle, "feature_consumables") ? this._renderConsumables(vehicle) : ""}${this._renderServiceHistory(vehicle)}${this._showDetails && this._vehicleFeatureEnabled(vehicle, "feature_rovinieta") ? this._renderRovinietaDetails(vehicle) : ""}`
+      : `${this._vehicleFeatureEnabled(vehicle, "feature_maintenance") ? this._renderMaintenance(vehicle) : ""}${this._renderLegalDetails(summary, vehicle)}${this._vehicleFeatureEnabled(vehicle, "feature_rovinieta") ? this._renderRovinietaDetails(vehicle) : ""}${this._renderFreeModeNotice()}`;
 
     return `
       ${this._renderOverallSummary(vehicle)}
       <div class="cmr-grid">
-        ${this._renderServiceTile(summary)}
-        ${this._renderTile("RCA", summary.rcaStatus, summary.rcaDays, summary.rcaExpiry, "mdi:shield-check")}
-        ${this._shouldShowCascoTile(summary) ? this._renderTile("CASCO", summary.cascoStatus, summary.cascoDays, summary.cascoExpiry, "mdi:shield-star") : ""}
-        ${this._renderTile("ITP", summary.itpStatus, summary.itpDays, summary.itpExpiry, "mdi:clipboard-check")}
-        ${this._renderTile("Rovinietă", summary.rovinietaStatus, summary.rovinietaDays, summary.rovinietaExpiry, "mdi:road-variant")}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_maintenance") ? this._renderServiceTile(summary) : ""}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_rca") ? this._renderTile("RCA", summary.rcaStatus, summary.rcaDays, summary.rcaExpiry, "mdi:shield-check") : ""}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_casco") && this._shouldShowCascoTile(summary) ? this._renderTile("CASCO", summary.cascoStatus, summary.cascoDays, summary.cascoExpiry, "mdi:shield-star") : ""}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_itp") ? this._renderTile("ITP", summary.itpStatus, summary.itpDays, summary.itpExpiry, "mdi:clipboard-check") : ""}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_rovinieta") ? this._renderTile("Rovinietă", summary.rovinietaStatus, summary.rovinietaDays, summary.rovinietaExpiry, "mdi:road-variant") : ""}
       </div>
       <div class="cmr-details-bar">
         <button class="cmr-details-button" data-action="toggle-details" data-vehicle="${this._escape(vehicle.key)}">
@@ -2345,12 +2405,12 @@ class CarManagerRomaniaCard extends HTMLElement {
     return `<div class="cmr-section"><div class="cmr-section-title">Mentenanță</div>${rows}</div>`;
   }
 
-  _renderLegalDetails(summary) {
+  _renderLegalDetails(summary, vehicle = null) {
     const rows = [
-      this._renderRow("RCA expiră la", summary.rcaExpiry, summary.rcaDays, summary.rcaStatus, this._statusClass(summary.rcaStatus || summary.rcaDays)),
-      this._shouldShowCascoTile(summary) ? this._renderRow("CASCO expiră la", summary.cascoExpiry, summary.cascoDays, summary.cascoStatus, this._statusClass(summary.cascoStatus || summary.cascoDays)) : "",
-      this._renderRow("ITP expiră la", summary.itpExpiry, summary.itpDays, summary.itpStatus, this._statusClass(summary.itpStatus || summary.itpDays)),
-      this._renderRow("Rovinietă expiră la", summary.rovinietaExpiry, summary.rovinietaDays, summary.rovinietaSource ? `Sursă: ${summary.rovinietaSource}` : summary.rovinietaStatus, this._statusClass(summary.rovinietaStatus || summary.rovinietaDays)),
+      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_rca")) ? this._renderRow("RCA expiră la", summary.rcaExpiry, summary.rcaDays, summary.rcaStatus, this._statusClass(summary.rcaStatus || summary.rcaDays)) : "",
+      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_casco")) && this._shouldShowCascoTile(summary) ? this._renderRow("CASCO expiră la", summary.cascoExpiry, summary.cascoDays, summary.cascoStatus, this._statusClass(summary.cascoStatus || summary.cascoDays)) : "",
+      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_itp")) ? this._renderRow("ITP expiră la", summary.itpExpiry, summary.itpDays, summary.itpStatus, this._statusClass(summary.itpStatus || summary.itpDays)) : "",
+      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_rovinieta")) ? this._renderRow("Rovinietă expiră la", summary.rovinietaExpiry, summary.rovinietaDays, summary.rovinietaSource ? `Sursă: ${summary.rovinietaSource}` : summary.rovinietaStatus, this._statusClass(summary.rovinietaStatus || summary.rovinietaDays)) : "",
     ].filter(Boolean).join("");
 
     return `<div class="cmr-section"><div class="cmr-section-title">Termene legale</div>${rows}</div>`;
@@ -5066,7 +5126,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       : summaries.filter((summary) => summary.key === this._fuelVehicleFilter);
     const payload = {
       type: "car_manager_romania_fuel_history",
-      version: "1.1.1b21",
+      version: "1.2.2",
       generated_at: new Date().toISOString(),
       filter: this._fuelVehicleFilter,
       vehicles: filtered.map((summary) => ({
@@ -5970,7 +6030,7 @@ class CarManagerRomaniaCard extends HTMLElement {
   }
 
   _shouldShowCascoTile(summary) {
-    return this._normalize(summary?.cascoStatus || "") !== "neconfigurat";
+    return this._featureEnabled("feature_casco") && this._normalize(summary?.cascoStatus || "") !== "neconfigurat";
   }
 
 

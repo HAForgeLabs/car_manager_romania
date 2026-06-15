@@ -33,6 +33,41 @@ add_vehicle:
           max: 1000000
           step: 1
           mode: box
+    fuel_profile:
+      name: Motorizare
+      description: Tipul de motorizare al autovehiculului.
+      required: false
+      selector:
+        select:
+          options:
+            - label: Benzină
+              value: gasoline
+            - label: Motorină
+              value: diesel
+            - label: GPL
+              value: lpg
+            - label: Electric
+              value: electric
+            - label: Hibrid benzină
+              value: hybrid_gasoline
+            - label: Hibrid motorină
+              value: hybrid_diesel
+            - label: Plug-in hybrid benzină
+              value: phev_gasoline
+            - label: Plug-in hybrid motorină
+              value: phev_diesel
+    registration_country:
+      name: Țara de înmatriculare
+      description: Țara de înmatriculare, dacă este disponibilă.
+      required: false
+      selector:
+        text:
+    registration_certificate:
+      name: Serie talon
+      description: Seria certificatului de înmatriculare, dacă este disponibilă.
+      required: false
+      selector:
+        text:
 
 edit_vehicle:
   name: Editează autovehicul
@@ -112,6 +147,12 @@ edit_vehicle:
       required: false
       selector:
         object:
+    vehicle_feature_options:
+      name: Funcționalități active pe autovehicul
+      description: Dicționar cu modulele active pentru acest autovehicul. Dezactivarea ascunde modulul și oprește notificările dedicate doar pentru această mașină.
+      required: false
+      selector:
+        object:
 
 remove_vehicle:
   name: Dezactivează autovehicul
@@ -120,6 +161,18 @@ remove_vehicle:
     vehicle_id:
       name: Autovehicul
       description: ID-ul intern stabil al autovehiculului care trebuie dezactivat.
+      required: true
+      example: sb01abc
+      selector:
+        text:
+
+delete_vehicle:
+  name: Șterge definitiv autovehicul
+  description: Șterge definitiv un autovehicul din Car Manager România, împreună cu datele asociate din istoric, combustibil, anvelope, dotări și baterie. Recomandat doar după backup.
+  fields:
+    vehicle_id:
+      name: Autovehicul
+      description: ID-ul intern stabil al autovehiculului care trebuie șters definitiv.
       required: true
       example: sb01abc
       selector:
@@ -1454,6 +1507,87 @@ set_notification_options:
       selector:
         boolean:
 
+set_feature_options:
+  name: Setează afișarea funcționalităților
+  description: Activează sau dezactivează afișarea modulelor în dashboard/card. Dezactivarea ascunde modulul și oprește notificările dedicate, fără să șteargă datele salvate.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Opțional. ID-ul config entry-ului Car Manager România. Se poate omite dacă există o singură instanță.
+      required: false
+      selector:
+        text:
+    feature_maintenance:
+      name: Mentenanță / revizii
+      required: false
+      selector:
+        boolean:
+    feature_rca:
+      name: RCA
+      required: false
+      selector:
+        boolean:
+    feature_casco:
+      name: CASCO
+      required: false
+      selector:
+        boolean:
+    feature_itp:
+      name: ITP
+      required: false
+      selector:
+        boolean:
+    feature_rovinieta:
+      name: Rovinietă
+      required: false
+      selector:
+        boolean:
+    feature_costs:
+      name: Costuri
+      required: false
+      selector:
+        boolean:
+    feature_statistics:
+      name: Statistici
+      required: false
+      selector:
+        boolean:
+    feature_fuel:
+      name: Combustibil
+      required: false
+      selector:
+        boolean:
+    feature_tires:
+      name: Anvelope
+      required: false
+      selector:
+        boolean:
+    feature_equipment:
+      name: Dotări
+      required: false
+      selector:
+        boolean:
+    feature_battery:
+      name: Baterie
+      required: false
+      selector:
+        boolean:
+    feature_consumables:
+      name: Consumabile
+      required: false
+      selector:
+        boolean:
+    feature_rovinieta_online:
+      name: Rovinietă online
+      required: false
+      selector:
+        boolean:
+    feature_itp_online:
+      name: Verificare ITP online
+      required: false
+      selector:
+        boolean:
+
 set_rovinieta_account:
   name: Setează cont rovinietă online
   description: "Salvează datele contului de rovinietă online pentru portalul selectat: CNAIR / erovinieta.ro sau e-rovinieta.ro."
@@ -1555,6 +1689,23 @@ refresh_rovinieta_now:
     entry_id:
       name: Entry ID
       description: Opțional. ID-ul config entry-ului Car Manager România. Se poate omite dacă există o singură instanță.
+      required: false
+      selector:
+        text:
+
+refresh_itp_now:
+  name: Verifică ITP online
+  description: Verifică online valabilitatea ITP prin RAR AutoPass și actualizează data expirării pentru autovehiculele cu VIN completat.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Opțional. ID-ul config entry-ului Car Manager România. Se poate omite dacă există o singură instanță.
+      required: false
+      selector:
+        text:
+    vehicle_id:
+      name: Autovehicul
+      description: Opțional. ID-ul intern al autovehiculului pentru care se verifică ITP. Dacă lipsește, se verifică toate autovehiculele active cu VIN completat.
       required: false
       selector:
         text:

@@ -5,11 +5,11 @@ from __future__ import annotations
 DOMAIN = "car_manager_romania"
 
 DEFAULT_NAME = "Car Manager România"
-VERSION = "1.1.1b21"
+VERSION = "1.2.2"
 
 PLATFORMS: list[str] = ["sensor", "number", "date", "text", "button"]
 
-ATTR_INTEGRATION_VERSION = "1.1.1b21"
+ATTR_INTEGRATION_VERSION = "1.2.2"
 
 SIGNAL_VEHICLES_UPDATED = f"{DOMAIN}_vehicles_updated"
 SIGNAL_LICENSE_UPDATED = f"{DOMAIN}_license_updated"
@@ -36,6 +36,7 @@ LICENSE_STATUS_UNKNOWN = "unknown"
 SERVICE_ADD_VEHICLE = "add_vehicle"
 SERVICE_EDIT_VEHICLE = "edit_vehicle"
 SERVICE_REMOVE_VEHICLE = "remove_vehicle"
+SERVICE_DELETE_VEHICLE = "delete_vehicle"
 SERVICE_RESTORE_VEHICLE = "restore_vehicle"
 SERVICE_RESTORE_ALL_VEHICLES = "restore_all_vehicles"
 SERVICE_ADD_SERVICE_RECORD = "add_service_record"
@@ -51,11 +52,13 @@ SERVICE_CLEANUP_ORPHAN_ENTITIES = "cleanup_orphan_entities"
 SERVICE_REFRESH_LICENSE_STATUS = "refresh_license_status"
 
 SERVICE_SET_NOTIFICATION_OPTIONS = "set_notification_options"
+SERVICE_SET_FEATURE_OPTIONS = "set_feature_options"
 SERVICE_SET_ROVINIETA_ACCOUNT = "set_rovinieta_account"
 SERVICE_GET_ROVINIETA_ACCOUNT = "get_rovinieta_account"
 SERVICE_SCAN_ROVINIETA_IMPORT_VEHICLES = "scan_rovinieta_import_vehicles"
 SERVICE_IMPORT_ROVINIETA_VEHICLE = "import_rovinieta_vehicle"
 SERVICE_REFRESH_ROVINIETA_NOW = "refresh_rovinieta_now"
+SERVICE_REFRESH_ITP_NOW = "refresh_itp_now"
 SERVICE_ADD_FUEL_RECEIPT = "add_fuel_receipt"
 SERVICE_UPDATE_FUEL_RECEIPT = "update_fuel_receipt"
 SERVICE_DELETE_FUEL_RECEIPT = "delete_fuel_receipt"
@@ -363,6 +366,41 @@ DEFAULT_NOTIFY_EQUIPMENT = True
 DEFAULT_NOTIFY_BATTERY = True
 DEFAULT_NOTIFY_EXPENSES = True
 
+# Setări pentru afișarea funcționalităților în dashboard/card.
+# Dezactivarea ascunde modulul din UI și oprește notificările dedicate, fără să șteargă datele salvate.
+CONF_FEATURE_MAINTENANCE = "feature_maintenance"
+CONF_FEATURE_RCA = "feature_rca"
+CONF_FEATURE_CASCO = "feature_casco"
+CONF_FEATURE_ITP = "feature_itp"
+CONF_FEATURE_ROVINIETA = "feature_rovinieta"
+CONF_FEATURE_COSTS = "feature_costs"
+CONF_FEATURE_STATISTICS = "feature_statistics"
+CONF_FEATURE_FUEL = "feature_fuel"
+CONF_FEATURE_TIRES = "feature_tires"
+CONF_FEATURE_EQUIPMENT = "feature_equipment"
+CONF_FEATURE_BATTERY = "feature_battery"
+CONF_FEATURE_CONSUMABLES = "feature_consumables"
+CONF_FEATURE_ROVINIETA_ONLINE = "feature_rovinieta_online"
+CONF_FEATURE_ITP_ONLINE = "feature_itp_online"
+
+CONF_VEHICLE_FEATURE_OPTIONS = "vehicle_feature_options"
+
+FEATURE_OPTION_DEFAULTS: dict[str, bool] = {
+    CONF_FEATURE_MAINTENANCE: True,
+    CONF_FEATURE_RCA: True,
+    CONF_FEATURE_CASCO: True,
+    CONF_FEATURE_ITP: True,
+    CONF_FEATURE_ROVINIETA: True,
+    CONF_FEATURE_COSTS: True,
+    CONF_FEATURE_STATISTICS: True,
+    CONF_FEATURE_FUEL: True,
+    CONF_FEATURE_TIRES: True,
+    CONF_FEATURE_EQUIPMENT: True,
+    CONF_FEATURE_BATTERY: True,
+    CONF_FEATURE_CONSUMABLES: True,
+    CONF_FEATURE_ROVINIETA_ONLINE: True,
+    CONF_FEATURE_ITP_ONLINE: True,
+}
 
 # Termene legale gestionate manual.
 # RCA, ITP și alte termene legale sunt separate de mentenanța mecanică.
@@ -399,6 +437,7 @@ LEGAL_DATA_SOURCE = "source"
 LEGAL_SOURCE_MANUAL = "manual"
 LEGAL_SOURCE_EROVINIETA = "e-rovinieta.ro"
 LEGAL_SOURCE_CNAIR_EROVINIETA = "erovinieta.ro"
+LEGAL_SOURCE_RAR_AUTOPASS = "RAR AutoPass"
 
 LEGAL_STATUS_UNKNOWN = "neconfigurat"
 LEGAL_STATUS_VALID = "valid"

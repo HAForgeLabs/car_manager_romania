@@ -34,6 +34,7 @@ from .const import (
     CONF_FEATURE_CASCO,
     CONF_FEATURE_ITP,
     CONF_FEATURE_ROVINIETA,
+    CONF_FUEL_PROFILE,
     CONF_KM,
     CONF_LICENSE_PLATE,
     CONF_LEGAL_TERMS,
@@ -217,6 +218,7 @@ class CarManagerStatusSensor(CarManagerBaseSensor):
                     CONF_LICENSE_PLATE: vehicle.get(CONF_LICENSE_PLATE, ""),
                     CONF_VIN: vehicle.get(CONF_VIN, ""),
                     CONF_KM: vehicle.get(CONF_KM, 0),
+                    CONF_FUEL_PROFILE: vehicle.get(CONF_FUEL_PROFILE, ""),
                 }
             )
 
@@ -485,6 +487,12 @@ class CarVehicleStatusSensor(CarVehicleBaseSensor):
 
         if self._vehicle.get(CONF_VIN):
             attributes[CONF_VIN] = self._vehicle[CONF_VIN]
+
+        # Expunem profilul de combustibil/motorizare pe senzorul principal al mașinii.
+        # Dashboardul își reconstruiește datele din atributele acestui senzor; fără acest
+        # atribut, modificarea motorizării era salvată în storage, dar după refresh UI-ul
+        # revenea la valoarea implicită.
+        attributes[CONF_FUEL_PROFILE] = self._vehicle.get(CONF_FUEL_PROFILE, "")
 
         vehicle_features = self._vehicle.get(CONF_VEHICLE_FEATURE_OPTIONS, {})
         if isinstance(vehicle_features, dict):

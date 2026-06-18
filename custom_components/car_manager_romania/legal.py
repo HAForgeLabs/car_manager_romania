@@ -13,6 +13,7 @@ from .const import (
     LEGAL_START_DATE,
     LEGAL_STATUS_EXPIRED,
     LEGAL_STATUS_SOON,
+    LEGAL_STATUS_SCHEDULED,
     LEGAL_STATUS_UNKNOWN,
     LEGAL_STATUS_VALID,
 )
@@ -94,12 +95,22 @@ def legal_status(vehicle: dict[str, Any], legal_type: str) -> str:
     if end_date < today:
         return LEGAL_STATUS_EXPIRED
 
+    start_date = parse_date(get_legal_value(vehicle, legal_type, LEGAL_START_DATE))
+    if start_date is not None and start_date > today:
+        return LEGAL_STATUS_SCHEDULED
+
     remaining_days = (end_date - today).days
     if remaining_days <= LEGAL_SOON_DAYS_THRESHOLD:
         return LEGAL_STATUS_SOON
 
-    start_date = parse_date(get_legal_value(vehicle, legal_type, LEGAL_START_DATE))
-    if start_date is not None and start_date > today:
-        return LEGAL_STATUS_UNKNOWN
-
     return LEGAL_STATUS_VALID
+
+
+def legal_days_until_start(vehicle: dict[str, Any], legal_type: str) -> int | None:
+    """Returnează numărul de zile până la începerea termenului legal."""
+
+    start_date = parse_date(get_legal_value(vehicle, legal_type, LEGAL_START_DATE))
+    if start_date is None:
+        return None
+
+    return max((start_date - date.today()).days, 0)

@@ -45,6 +45,7 @@ from .const import (
     LEGAL_TYPES,
     LEGAL_STATUS_EXPIRED,
     LEGAL_STATUS_SOON,
+    LEGAL_STATUS_SCHEDULED,
     LEGAL_STATUS_UNKNOWN,
     LEGAL_STATUS_VALID,
     LEGAL_TYPE_CASCO,
@@ -61,6 +62,8 @@ from .const import (
     MAINTENANCE_TYPES,
     MAINTENANCE_TIME_ONLY_TYPES,
     MAINTENANCE_TYPE_SERVICE,
+    MAINTENANCE_TYPE_GEARBOX_OIL,
+    MAINTENANCE_TYPE_TIMING_BELT,
     MAINTENANCE_STATUS_OK,
     MAINTENANCE_STATUS_OVERDUE,
     MAINTENANCE_STATUS_SOON,
@@ -68,7 +71,7 @@ from .const import (
     SIGNAL_VEHICLES_UPDATED,
     VERSION,
 )
-from .legal import legal_days_remaining, legal_status, get_legal_value, is_legal_ignored
+from .legal import legal_days_remaining, legal_days_until_start, legal_status, get_legal_value, is_legal_ignored
 from .maintenance import (
     calculate_days_remaining,
     calculate_km_remaining,
@@ -719,6 +722,21 @@ def _vehicle_feature_enabled(vehicle: dict[str, Any], feature_key: str) -> bool:
         return True
     return bool(features.get(feature_key, True))
 
+
+def _is_electric_vehicle(vehicle: dict[str, Any]) -> bool:
+    """Returnează True pentru autovehiculele configurate ca electrice."""
+
+    fuel_profile = str(vehicle.get(CONF_FUEL_PROFILE) or "").strip().lower()
+    return fuel_profile == "electric"
+
+
+def _maintenance_type_applies_to_vehicle(vehicle: dict[str, Any], maintenance_type: str) -> bool:
+    """Ascunde jaloanele mecanice irelevante pentru autovehiculele electrice."""
+
+    if not _is_electric_vehicle(vehicle):
+        return True
+    return maintenance_type not in {MAINTENANCE_TYPE_GEARBOX_OIL, MAINTENANCE_TYPE_TIMING_BELT}
+
 def _vehicle_overall_summary(vehicle: dict[str, Any]) -> dict[str, Any]:
     """Funcție internă pentru vehicul general rezumat."""
 
@@ -729,6 +747,8 @@ def _vehicle_overall_summary(vehicle: dict[str, Any]) -> dict[str, Any]:
 
     if _vehicle_feature_enabled(vehicle, CONF_FEATURE_MAINTENANCE):
       for maintenance_type, label in MAINTENANCE_TYPES.items():
+        if not _maintenance_type_applies_to_vehicle(vehicle, maintenance_type):
+            continue
         status = maintenance_status(vehicle, maintenance_type)
         km_remaining, days_remaining = maintenance_remaining_values(vehicle, maintenance_type)
         item = _build_overall_item(
@@ -780,6 +800,9 @@ def _vehicle_overall_summary(vehicle: dict[str, Any]) -> dict[str, Any]:
             critical_items.append(item)
         elif status == LEGAL_STATUS_SOON:
             warning_items.append(item)
+        elif status == LEGAL_STATUS_SCHEDULED:
+            item["summary"] = f"activ din {get_legal_value(vehicle, legal_type, LEGAL_START_DATE) or "—"}"
+            ok_items.append(item)
         elif status == LEGAL_STATUS_VALID:
             ok_items.append(item)
         else:
@@ -1169,6 +1192,7 @@ class CarVehicleLegalStatusSensor(CarVehicleBaseSensor):
                 LEGAL_END_DATE,
             ),
             "zile_ramase": legal_days_remaining(self._vehicle, self._legal_type),
+            "zile_pana_la_start": legal_days_until_start(self._vehicle, self._legal_type),
             "ignored": bool(get_legal_value(
                 self._vehicle,
                 self._legal_type,

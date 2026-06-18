@@ -1,5 +1,5 @@
 class CarManagerRomaniaCard extends HTMLElement {
-  static get version() { return "v1.2.3"; }
+  static get version() { return "v1.2.5b2"; }
   setConfig(config) {
     this.config = config || {};
     this._editMode = this.config.edit_mode ?? false;
@@ -1798,6 +1798,9 @@ class CarManagerRomaniaCard extends HTMLElement {
     const localValue = extractValue(localEntity);
     if (localValue) return this._normalizeFuelProfile(localValue);
 
+    const attrsValue = vehicle.attrs?.fuel_profile || vehicle.attrs?.motorizare || vehicle.fuel_profile || "";
+    if (attrsValue) return this._normalizeFuelProfile(attrsValue);
+
     const vehicleKeys = [
       vehicle.vehicle_id,
       vehicle.key,
@@ -1861,6 +1864,76 @@ class CarManagerRomaniaCard extends HTMLElement {
       ["phev_gasoline", "Plug-in hybrid benzină"], ["phev_diesel", "Plug-in hybrid motorină"],
     ];
     return options.map(([value, label]) => `<option value="${value}" ${value === selectedProfile ? "selected" : ""}>${label}</option>`).join("");
+  }
+
+  _isElectricVehicle(vehicle) {
+    return this._vehicleFuelProfile(vehicle) === "electric";
+  }
+
+  _maintenanceDisplayGroupsForVehicle(vehicle) {
+    if (this._isElectricVehicle(vehicle)) {
+      return [
+        { key: "revizie", title: "Revizie generală EV" },
+        { key: "lichid fr", title: "Lichid frână" },
+        { key: "antigel", title: "Lichid răcire baterie / sistem" },
+      ];
+    }
+    return [
+      { key: "revizie", title: "Revizie generală" },
+      { key: "ulei cutie", title: "Ulei cutie viteze" },
+      { key: "distribu", title: "Distribuție" },
+      { key: "lichid fr", title: "Lichid frână" },
+      { key: "antigel", title: "Lichid antigel" },
+    ];
+  }
+
+  _consumableNameAllowedForVehicle(vehicle, name) {
+    const normalized = this._normalize(name);
+    if (!this._isElectricVehicle(vehicle)) {
+      return !normalized.includes("soh")
+        && !normalized.includes("capacitate baterie")
+        && !normalized.includes("cicluri incarcare")
+        && !normalized.includes("autonomie estimata");
+    }
+    const hidden = [
+      "ulei motor",
+      "cantitate ulei",
+      "filtru ulei",
+      "filtru combustibil",
+      "kit distributie",
+      "distributie",
+      "ulei cutie",
+    ];
+    return !hidden.some((term) => normalized.includes(term));
+  }
+
+  _editGroupsForVehicle(vehicle) {
+    const groups = [
+      { title: "Date autovehicul", test: (e) => this._isVehicleEditField(e) || this._isFuelProfileEditField(e) },
+    ];
+    if (this._isElectricVehicle(vehicle)) {
+      groups.push(
+        { title: "Revizie generală EV", test: (e) => this._isMaintenanceEditField(e, ["revizie"]) },
+        { title: "Lichid frână", test: (e) => this._isMaintenanceEditField(e, ["lichid fr"]) },
+        { title: "Lichid răcire baterie / sistem", test: (e) => this._isMaintenanceEditField(e, ["antigel"]) },
+      );
+    } else {
+      groups.push(
+        { title: "Revizie generală", test: (e) => this._isMaintenanceEditField(e, ["revizie"]) },
+        { title: "Ulei cutie viteze", test: (e) => this._isMaintenanceEditField(e, ["ulei cutie"]) },
+        { title: "Distribuție", test: (e) => this._isMaintenanceEditField(e, ["distribu"]) },
+        { title: "Lichid frână", test: (e) => this._isMaintenanceEditField(e, ["lichid fr"]) },
+        { title: "Lichid antigel", test: (e) => this._isMaintenanceEditField(e, ["antigel"]) },
+      );
+    }
+    groups.push(
+      { title: "RCA", test: (e) => this._isLegalEditField(e, "rca") },
+      { title: "CASCO", test: (e) => this._isLegalEditField(e, "casco") },
+      { title: "ITP", test: (e) => this._isLegalEditField(e, "itp") },
+      { title: "Rovinietă", test: (e) => this._isLegalEditField(e, "rovinieta") },
+      { title: this._isElectricVehicle(vehicle) ? "Consumabile / EV" : "Consumabile", test: (e) => this._isConsumableEditField(e) && this._consumableNameAllowedForVehicle(vehicle, this._friendly(e)) },
+    );
+    return groups;
   }
 
   _fuelTypeOptions(profile, selected) {
@@ -2259,10 +2332,10 @@ class CarManagerRomaniaCard extends HTMLElement {
       ${this._renderOverallSummary(vehicle)}
       <div class="cmr-grid">
         ${this._vehicleFeatureEnabled(vehicle, "feature_maintenance") ? this._renderServiceTile(summary) : ""}
-        ${this._vehicleFeatureEnabled(vehicle, "feature_rca") ? this._renderTile("RCA", summary.rcaStatus, summary.rcaDays, summary.rcaExpiry, "mdi:shield-check") : ""}
-        ${this._vehicleFeatureEnabled(vehicle, "feature_casco") && this._shouldShowCascoTile(summary) ? this._renderTile("CASCO", summary.cascoStatus, summary.cascoDays, summary.cascoExpiry, "mdi:shield-star") : ""}
-        ${this._vehicleFeatureEnabled(vehicle, "feature_itp") ? this._renderTile("ITP", summary.itpStatus, summary.itpDays, summary.itpExpiry, "mdi:clipboard-check") : ""}
-        ${this._vehicleFeatureEnabled(vehicle, "feature_rovinieta") ? this._renderTile("Rovinietă", summary.rovinietaStatus, summary.rovinietaDays, summary.rovinietaExpiry, "mdi:road-variant") : ""}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_rca") ? this._renderTile("RCA", summary.rcaStatus, summary.rcaDays, summary.rcaExpiry, "mdi:shield-check", { start: summary.rcaStart, daysUntilStart: summary.rcaDaysUntilStart }) : ""}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_casco") && this._shouldShowCascoTile(summary) ? this._renderTile("CASCO", summary.cascoStatus, summary.cascoDays, summary.cascoExpiry, "mdi:shield-star", { start: summary.cascoStart, daysUntilStart: summary.cascoDaysUntilStart }) : ""}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_itp") ? this._renderTile("ITP", summary.itpStatus, summary.itpDays, summary.itpExpiry, "mdi:clipboard-check", { start: summary.itpStart, daysUntilStart: summary.itpDaysUntilStart }) : ""}
+        ${this._vehicleFeatureEnabled(vehicle, "feature_rovinieta") ? this._renderTile("Rovinietă", summary.rovinietaStatus, summary.rovinietaDays, summary.rovinietaExpiry, "mdi:road-variant", { start: summary.rovinietaStart, daysUntilStart: summary.rovinietaDaysUntilStart }) : ""}
       </div>
       <div class="cmr-details-bar">
         <button class="cmr-details-button" data-action="toggle-details" data-vehicle="${this._escape(vehicle.key)}">
@@ -2367,25 +2440,26 @@ class CarManagerRomaniaCard extends HTMLElement {
     `;
   }
 
-  _renderTile(title, status, main, sub, icon) {
+  _renderTile(title, status, main, sub, icon, options = {}) {
+    const scheduled = this._normalize(status).includes("programat") || this._toNumber(options.daysUntilStart) > 0;
     const stateClass = this._statusClass(status || main || sub);
+    const mainText = scheduled ? "programat" : this._formatMain(main);
+    const subText = scheduled
+      ? `activ din ${options.start || "data setată"}`
+      : this._formatDisplayValue(status || sub || "neconfigurat");
+    const expiryText = scheduled && sub ? `<div class="cmr-tile-sub">expiră la ${this._escape(this._formatDisplayValue(sub))}</div>` : "";
     return `
-      <div class="cmr-tile ${stateClass}">
+      <div class="cmr-tile ${stateClass} ${scheduled ? "scheduled" : ""}">
         <div class="cmr-tile-top"><ha-icon icon="${icon}"></ha-icon><span class="cmr-tile-title">${this._escape(title)}</span></div>
-        <div class="cmr-tile-main">${this._escape(this._formatMain(main))}</div>
-        <div class="cmr-tile-sub">${this._escape(this._formatDisplayValue(status || sub || "neconfigurat"))}</div>
+        <div class="cmr-tile-main">${this._escape(mainText)}</div>
+        <div class="cmr-tile-sub">${this._escape(subText)}</div>
+        ${expiryText}
       </div>
     `;
   }
 
   _renderMaintenance(vehicle) {
-    const groups = [
-      { key: "revizie", title: "Revizie generală" },
-      { key: "ulei cutie", title: "Ulei cutie viteze" },
-      { key: "distribu", title: "Distribuție" },
-      { key: "lichid fr", title: "Lichid frână" },
-      { key: "antigel", title: "Lichid antigel" },
-    ];
+    const groups = this._maintenanceDisplayGroupsForVehicle(vehicle);
 
     const rows = groups.map((group) => {
       const status = this._findSensorByName(vehicle, [group.key, "status"]);
@@ -2407,13 +2481,22 @@ class CarManagerRomaniaCard extends HTMLElement {
 
   _renderLegalDetails(summary, vehicle = null) {
     const rows = [
-      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_rca")) ? this._renderRow("RCA expiră la", summary.rcaExpiry, summary.rcaDays, summary.rcaStatus, this._statusClass(summary.rcaStatus || summary.rcaDays)) : "",
-      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_casco")) && this._shouldShowCascoTile(summary) ? this._renderRow("CASCO expiră la", summary.cascoExpiry, summary.cascoDays, summary.cascoStatus, this._statusClass(summary.cascoStatus || summary.cascoDays)) : "",
-      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_itp")) ? this._renderRow("ITP expiră la", summary.itpExpiry, summary.itpDays, summary.itpStatus, this._statusClass(summary.itpStatus || summary.itpDays)) : "",
-      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_rovinieta")) ? this._renderRow("Rovinietă expiră la", summary.rovinietaExpiry, summary.rovinietaDays, summary.rovinietaSource ? `Sursă: ${summary.rovinietaSource}` : summary.rovinietaStatus, this._statusClass(summary.rovinietaStatus || summary.rovinietaDays)) : "",
+      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_rca")) ? this._renderLegalDetailRow("RCA", summary.rcaStatus, summary.rcaDays, summary.rcaExpiry, summary.rcaStart, summary.rcaDaysUntilStart) : "",
+      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_casco")) && this._shouldShowCascoTile(summary) ? this._renderLegalDetailRow("CASCO", summary.cascoStatus, summary.cascoDays, summary.cascoExpiry, summary.cascoStart, summary.cascoDaysUntilStart) : "",
+      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_itp")) ? this._renderLegalDetailRow("ITP", summary.itpStatus, summary.itpDays, summary.itpExpiry, summary.itpStart, summary.itpDaysUntilStart) : "",
+      (!vehicle || this._vehicleFeatureEnabled(vehicle, "feature_rovinieta")) ? this._renderLegalDetailRow("Rovinietă", summary.rovinietaStatus, summary.rovinietaDays, summary.rovinietaExpiry, summary.rovinietaStart, summary.rovinietaDaysUntilStart, summary.rovinietaSource ? `Sursă: ${summary.rovinietaSource}` : "") : "",
     ].filter(Boolean).join("");
 
     return `<div class="cmr-section"><div class="cmr-section-title">Termene legale</div>${rows}</div>`;
+  }
+
+  _renderLegalDetailRow(label, status, days, expiry, start, daysUntilStart, extra = "") {
+    const scheduled = this._normalize(status).includes("programat") || this._toNumber(daysUntilStart) > 0;
+    if (scheduled) {
+      const detail = expiry ? `expiră la ${expiry}${extra ? ` · ${extra}` : ""}` : extra;
+      return this._renderRow(`${label} activ din`, start || "data setată", "programat", detail, this._statusClass(status || "programat"));
+    }
+    return this._renderRow(`${label} expiră la`, expiry, days, extra || status, this._statusClass(status || days));
   }
 
   _renderVehicleStatistics(vehicle) {
@@ -2935,6 +3018,7 @@ class CarManagerRomaniaCard extends HTMLElement {
   _renderConsumables(vehicle) {
     const rows = vehicle.entities
       .filter(({ entityId, stateObj }) => entityId.startsWith("text.") && this._isConsumableName(this._friendly({ stateObj, entityId })))
+      .filter((entity) => this._consumableNameAllowedForVehicle(vehicle, this._friendly(entity)))
       .map((entity) => this._renderSpecRow(this._specLabel(this._friendly(entity)), entity.stateObj.state || "—"))
       .join("");
 
@@ -3173,19 +3257,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       vehicle.entities.filter(({ entityId }) => entityId.startsWith("number.") || entityId.startsWith("date.") || entityId.startsWith("text."))
     ).filter((entity) => this._isEditableField(entity));
 
-    const groups = [
-      { title: "Date autovehicul", test: (e) => this._isVehicleEditField(e) || this._isFuelProfileEditField(e) },
-      { title: "Revizie generală", test: (e) => this._isMaintenanceEditField(e, ["revizie"]) },
-      { title: "Ulei cutie viteze", test: (e) => this._isMaintenanceEditField(e, ["ulei cutie"]) },
-      { title: "Distribuție", test: (e) => this._isMaintenanceEditField(e, ["distribu"]) },
-      { title: "Lichid frână", test: (e) => this._isMaintenanceEditField(e, ["lichid fr"]) },
-      { title: "Lichid antigel", test: (e) => this._isMaintenanceEditField(e, ["antigel"]) },
-      { title: "RCA", test: (e) => this._isLegalEditField(e, "rca") },
-      { title: "CASCO", test: (e) => this._isLegalEditField(e, "casco") },
-      { title: "ITP", test: (e) => this._isLegalEditField(e, "itp") },
-      { title: "Rovinietă", test: (e) => this._isLegalEditField(e, "rovinieta") },
-      { title: "Consumabile", test: (e) => this._isConsumableEditField(e) },
-    ];
+    const groups = this._editGroupsForVehicle(vehicle);
 
     const used = new Set();
     const content = groups.map((group) => {
@@ -5126,7 +5198,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       : summaries.filter((summary) => summary.key === this._fuelVehicleFilter);
     const payload = {
       type: "car_manager_romania_fuel_history",
-      version: "1.2.3b1",
+      version: "1.2.5b2",
       generated_at: new Date().toISOString(),
       filter: this._fuelVehicleFilter,
       vehicles: filtered.map((summary) => ({
@@ -5604,15 +5676,23 @@ class CarManagerRomaniaCard extends HTMLElement {
       rcaStatus: this._entityValue(rcaStatus),
       rcaDays: this._formatDays(this._entityValue(rcaDays)),
       rcaExpiry: this._formatDateForDisplay(this._entityValue(rcaExpiry)),
+      rcaStart: this._legalStartFromStatus(rcaStatus),
+      rcaDaysUntilStart: this._legalDaysUntilStartFromStatus(rcaStatus),
       cascoStatus: this._entityValue(cascoStatus),
       cascoDays: this._formatDays(this._entityValue(cascoDays)),
       cascoExpiry: this._formatDateForDisplay(this._entityValue(cascoExpiry)),
+      cascoStart: this._legalStartFromStatus(cascoStatus),
+      cascoDaysUntilStart: this._legalDaysUntilStartFromStatus(cascoStatus),
       itpStatus: this._entityValue(itpStatus),
       itpDays: this._formatDays(this._entityValue(itpDays)),
       itpExpiry: this._formatDateForDisplay(this._entityValue(itpExpiry)),
+      itpStart: this._legalStartFromStatus(itpStatus),
+      itpDaysUntilStart: this._legalDaysUntilStartFromStatus(itpStatus),
       rovinietaStatus: this._entityValue(rovStatus),
       rovinietaDays: this._formatDays(this._entityValue(rovDays)),
       rovinietaExpiry: this._formatDateForDisplay(this._entityValue(rovExpiry)),
+      rovinietaStart: this._legalStartFromStatus(rovStatus),
+      rovinietaDaysUntilStart: this._legalDaysUntilStartFromStatus(rovStatus),
       rovinietaSource: this._rovinietaSourceLabel(rovSource),
     };
   }
@@ -5622,6 +5702,18 @@ class CarManagerRomaniaCard extends HTMLElement {
     const found = this._findByName(vehicle, terms, excludeTerms, (entity) => entity.entityId.startsWith("sensor."));
     if (found) return found;
     return this._findByName(vehicle, terms, excludeTerms);
+  }
+
+  _legalStartFromStatus(entity) {
+    const attrs = entity?.stateObj?.attributes || {};
+    return this._formatDateForDisplay(attrs.incepe_la || attrs.start_date || attrs.data_inceput || "");
+  }
+
+  _legalDaysUntilStartFromStatus(entity) {
+    const attrs = entity?.stateObj?.attributes || {};
+    const value = attrs.zile_pana_la_start ?? attrs.days_until_start;
+    const number = this._toNumber(value);
+    return Number.isFinite(number) ? number : null;
   }
 
   _findRovinietaSource(vehicle) {

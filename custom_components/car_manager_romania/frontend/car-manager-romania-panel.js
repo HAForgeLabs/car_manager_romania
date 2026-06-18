@@ -86,6 +86,15 @@ class CarManagerRomaniaPanel extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     const signature = this._buildSignature();
+
+    // Dacă utilizatorul completează formularul extins de editare autovehicul,
+    // nu randăm din nou panelul la fiecare refresh de stare Home Assistant.
+    // Altfel, valorile tastate dar nesalvate se pierd când se actualizează senzorii.
+    if (this._isVehicleEditFormActive()) {
+      this._pendingSignatureWhileEditing = signature;
+      return;
+    }
+
     if (signature === this._lastSignature && this.shadowRoot?.querySelector(".cmr-panel")) return;
     this._lastSignature = signature;
     this._render(false);
@@ -109,6 +118,13 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _removePreference(name) {
     try { window.localStorage?.removeItem(this._storageKey(name)); } catch (_err) {}
+  }
+
+  _isVehicleEditFormActive() {
+    const active = this.shadowRoot?.activeElement;
+    if (!active || typeof active.closest !== "function") return false;
+    const form = active.closest("form[data-form='vehicle-edit']");
+    return Boolean(form && this.shadowRoot?.contains(form));
   }
 
   _isCompactLayout() {
@@ -604,7 +620,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs" style="position:absolute;right:12px;top:12px;bottom:auto;z-index:4;">
               <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.3</small></span>
+              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.5b2</small></span>
             </a>
           </div>
           <aside class="cmr-hero-side" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;width:100%;max-width:100%;margin-top:14px;">
@@ -630,7 +646,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._renderHeroCar()}
           <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs">
             <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.3</small></span>
+            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.5b2</small></span>
           </a>
         </div>
         <aside class="cmr-hero-side">
@@ -908,6 +924,12 @@ class CarManagerRomaniaPanel extends HTMLElement {
     const icon = term.key === "rca" ? "mdi:shield-check" : term.key === "itp" ? "mdi:clipboard-check" : term.key === "casco" ? "mdi:shield-star" : "mdi:road-variant";
     const plate = term.vehicle.plate || term.vehicle.vin || term.vehicle.vehicle_id || "";
     const sourceBadge = ["itp", "rovinieta"].includes(term.key) ? this._renderLegalSourceLine(term.key, term.source || "manual") : "";
+    const primaryLine = term.isScheduled
+      ? `activ din ${this._escape(term.startText || "data setată")}`
+      : (term.expiryText ? `expiră la ${this._escape(term.expiryText)}` : this._escape(term.status || "configurat"));
+    const expiryLine = term.isScheduled && term.expiryText
+      ? `<small>expiră la ${this._escape(term.expiryText)}</small>`
+      : "";
     return `
       <article class="cmr-legal-card ${term.level}">
         <div class="cmr-legal-icon"><ha-icon icon="${icon}"></ha-icon></div>
@@ -917,7 +939,8 @@ class CarManagerRomaniaPanel extends HTMLElement {
             <em>${this._escape(term.vehicle.label)}</em>
           </div>
           <strong>${this._escape(term.valueText)}</strong>
-          <small>${plate ? `${this._escape(plate)} · ` : ""}${term.expiryText ? `expiră la ${this._escape(term.expiryText)}` : this._escape(term.status || "configurat")}</small>
+          <small>${plate ? `${this._escape(plate)} · ` : ""}${primaryLine}</small>
+          ${expiryLine}
           ${sourceBadge}
         </div>
       </article>
@@ -943,6 +966,10 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _legalTermFromVehicle(vehicle, key, label, terms) {
     const attrs = vehicle.attrs || {};
+    const legalTerms = attrs.legal_terms || attrs.terms || {};
+    const termAttrs = legalTerms[key] || {};
+    const statusEntity = this._findEntity(vehicle, terms.concat(["status"]));
+    const statusAttrs = statusEntity?.stateObj?.attributes || {};
     const directDays = this._pickAttrNumber(attrs, [
       `${key}_days_remaining`, `${key}_remaining_days`, `${key}_days`, `${key}_zile_ramase`,
       `${key}Days`, `${key}RemainingDays`, `${key}_zile`, `${key}_remaining`,
@@ -950,10 +977,17 @@ class CarManagerRomaniaPanel extends HTMLElement {
     const directExpiry = this._pickAttrValue(attrs, [
       `${key}_expiry`, `${key}_expiry_date`, `${key}_expires_at`, `${key}_expiration_date`,
       `${key}_expira_la`, `${key}_data_expirare`, `${key}Expiry`, `${key}ExpiryDate`,
-    ]);
+    ]) || termAttrs.end_date || termAttrs.expiry_date || termAttrs.expira_la || statusAttrs.expira_la;
+    const directStart = this._pickAttrValue(attrs, [
+      `${key}_start`, `${key}_start_date`, `${key}_starts_at`, `${key}_incepe_la`, `${key}_data_inceput`,
+      `${key}Start`, `${key}StartDate`,
+    ]) || termAttrs.start_date || termAttrs.incepe_la || statusAttrs.incepe_la;
     const directStatus = this._pickAttrValue(attrs, [
       `${key}_status`, `${key}Status`, `${key}_state`,
     ]);
+    const directDaysUntilStart = this._pickAttrNumber(attrs, [
+      `${key}_days_until_start`, `${key}_zile_pana_la_start`, `${key}_start_days`,
+    ]) ?? this._pickAttrNumber(statusAttrs, ["zile_pana_la_start", "days_until_start"]);
 
     const foundDays = directDays !== null
       ? directDays
@@ -963,29 +997,39 @@ class CarManagerRomaniaPanel extends HTMLElement {
     const foundExpiry = directExpiry
       || this._findEntityValue(vehicle, terms.concat(["expir"]))
       || this._findEntityValue(vehicle, terms.concat(["data"]));
+    const foundStart = directStart || this._findEntityValue(vehicle, terms.concat(["incepe"]));
     const foundStatus = directStatus
       || this._findEntityValue(vehicle, terms.concat(["status"]));
     const source = ["itp", "rovinieta"].includes(key) ? this._legalSourceFromVehicle(vehicle, key) : "";
 
     const daysFromExpiry = foundDays !== null ? foundDays : this._daysUntil(foundExpiry);
-    const hasAny = foundStatus || foundExpiry || daysFromExpiry !== null;
+    const daysUntilStart = directDaysUntilStart !== null ? directDaysUntilStart : this._daysUntil(foundStart);
+    const isScheduled = this._normalize(foundStatus).includes("programat") || (daysUntilStart !== null && daysUntilStart > 0);
+    const hasAny = foundStatus || foundExpiry || foundStart || daysFromExpiry !== null;
     if (!hasAny) return null;
 
-    const level = daysFromExpiry !== null && daysFromExpiry <= 0 ? "critical" : daysFromExpiry !== null && daysFromExpiry <= 30 ? "warning" : "ok";
-    const valueText = daysFromExpiry !== null
-      ? (daysFromExpiry <= 0 ? `Depășit · ${Math.abs(daysFromExpiry)} zile` : `${daysFromExpiry} zile rămase`)
-      : (foundStatus || "configurat");
+    const level = isScheduled
+      ? "scheduled"
+      : daysFromExpiry !== null && daysFromExpiry <= 0 ? "critical" : daysFromExpiry !== null && daysFromExpiry <= 30 ? "warning" : "ok";
+    const valueText = isScheduled
+      ? (daysUntilStart !== null && daysUntilStart > 0 ? `Programat · activ în ${daysUntilStart} zile` : "Programat")
+      : daysFromExpiry !== null
+        ? (daysFromExpiry <= 0 ? `Depășit · ${Math.abs(daysFromExpiry)} zile` : `${daysFromExpiry} zile rămase`)
+        : (foundStatus || "configurat");
     return {
       key,
       label,
       vehicle,
       status: foundStatus || "",
       days: daysFromExpiry,
+      daysUntilStart,
+      isScheduled,
+      startText: this._formatDate(foundStart),
       expiryText: this._formatDate(foundExpiry),
       valueText,
       source,
       level,
-      sort: daysFromExpiry !== null ? daysFromExpiry : 99999,
+      sort: isScheduled && daysUntilStart !== null ? daysUntilStart : (daysFromExpiry !== null ? daysFromExpiry : 99999),
     };
   }
 
@@ -1220,14 +1264,20 @@ class CarManagerRomaniaPanel extends HTMLElement {
   _renderVehicleLegalChip(term) {
     const icon = term.key === "rca" ? "mdi:shield-check" : term.key === "itp" ? "mdi:clipboard-check" : term.key === "casco" ? "mdi:shield-star" : "mdi:road-variant";
     const sourceLine = ["itp", "rovinieta"].includes(term.key) ? this._renderLegalSourceLine(term.key, term.source || "manual") : "";
-    const expiry = term.expiryText ? `expiră la ${this._escape(term.expiryText)}` : this._escape(term.status || "configurat");
+    const primaryLine = term.isScheduled
+      ? `activ din ${this._escape(term.startText || "data setată")}`
+      : (term.expiryText ? `expiră la ${this._escape(term.expiryText)}` : this._escape(term.status || "configurat"));
+    const expiryLine = term.isScheduled && term.expiryText
+      ? `<small>expiră la ${this._escape(term.expiryText)}</small>`
+      : "";
     return `
       <div class="cmr-vehicle-legal-chip ${term.level}">
         <ha-icon icon="${icon}"></ha-icon>
         <div>
           <span>${this._escape(term.label)}</span>
           <strong>${this._escape(term.valueText)}</strong>
-          <small>${expiry}</small>
+          <small>${primaryLine}</small>
+          ${expiryLine}
           ${sourceLine}
         </div>
       </div>
@@ -1538,6 +1588,80 @@ class CarManagerRomaniaPanel extends HTMLElement {
     return this._normalizeFuelProfile(value || vehicle.attrs?.fuel_profile || vehicle.attrs?.motorizare || "diesel");
   }
 
+  _isElectricVehicle(vehicle) {
+    return this._vehicleFuelProfile(vehicle) === "electric";
+  }
+
+  _maintenanceEditGroupsForVehicle(vehicle) {
+    if (this._isElectricVehicle(vehicle)) {
+      return [
+        { key: "service", title: "Revizie generală EV", terms: ["revizie"], withKm: true },
+        { key: "brake_fluid", title: "Lichid frână", terms: ["lichid", "fr"], withKm: false },
+        { key: "coolant", title: "Lichid răcire baterie / sistem", terms: ["antigel"], withKm: false },
+      ];
+    }
+    return [
+      { key: "service", title: "Revizie generală", terms: ["revizie"], withKm: true },
+      { key: "gearbox_oil", title: "Ulei cutie viteze", terms: ["ulei", "cutie"], withKm: true },
+      { key: "timing_belt", title: "Distribuție", terms: ["distribu"], withKm: true },
+      { key: "brake_fluid", title: "Lichid frână", terms: ["lichid", "fr"], withKm: false },
+      { key: "coolant", title: "Lichid antigel", terms: ["antigel"], withKm: false },
+    ];
+  }
+
+  _consumableEditFieldsForVehicle(vehicle) {
+    if (this._isElectricVehicle(vehicle)) {
+      return [
+        ["ev_battery_soh", "SOH baterie tracțiune (%)", ["soh", "baterie"], []],
+        ["ev_battery_capacity_kwh", "Capacitate baterie tracțiune (kWh)", ["capacitate", "baterie"], []],
+        ["ev_charge_cycles", "Cicluri încărcare", ["cicluri", "incarcare"], []],
+        ["ev_estimated_range", "Autonomie estimată", ["autonomie"], []],
+        ["cabin_filter", "Filtru habitaclu / aer condiționat", ["filtru", "habitaclu"], []],
+        ["brake_fluid", "Lichid frână", ["lichid", "frana"], ["ultima", "interval", "cost"]],
+        ["coolant", "Lichid răcire baterie / sistem", ["lichid", "antigel"], ["ultima", "interval", "cost"]],
+      ];
+    }
+    return [
+      ["engine_oil_capacity", "Cantitate ulei motor", ["cantitate", "ulei", "motor"], []],
+      ["engine_oil", "Ulei motor", ["ulei", "motor"], ["cantitate", "cutie"]],
+      ["oil_filter", "Filtru ulei", ["filtru", "ulei"], []],
+      ["air_filter", "Filtru aer", ["filtru", "aer"], []],
+      ["fuel_filter", "Filtru combustibil", ["filtru", "combustibil"], []],
+      ["cabin_filter", "Filtru habitaclu / aer condiționat", ["filtru", "habitaclu"], []],
+      ["gearbox_oil", "Ulei cutie viteze", ["ulei", "cutie"], ["ultima", "interval", "cost"]],
+      ["brake_fluid", "Lichid frână", ["lichid", "frana"], ["ultima", "interval", "cost"]],
+      ["coolant", "Lichid antigel", ["lichid", "antigel"], ["ultima", "interval", "cost"]],
+      ["timing_kit", "Kit distribuție", ["kit", "distributie"], []],
+    ];
+  }
+
+  _recordTypeOptionsForVehicle(vehicle, selected) {
+    const options = this._isElectricVehicle(vehicle)
+      ? [
+          ["service", "Revizie generală EV"],
+          ["brake_fluid", "Lichid frână"],
+          ["coolant", "Lichid răcire baterie / sistem"],
+          ["rca", "RCA"],
+          ["casco", "CASCO"],
+          ["itp", "ITP"],
+          ["rovinieta", "Rovinietă"],
+          ["custom", "Altă intervenție"],
+        ]
+      : [
+          ["service", "Revizie / service"],
+          ["gearbox_oil", "Ulei cutie viteze"],
+          ["timing_belt", "Distribuție"],
+          ["brake_fluid", "Lichid frână"],
+          ["coolant", "Lichid antigel"],
+          ["rca", "RCA"],
+          ["casco", "CASCO"],
+          ["itp", "ITP"],
+          ["rovinieta", "Rovinietă"],
+          ["custom", "Altă intervenție"],
+        ];
+    return options.map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${this._escape(label)}</option>`).join("");
+  }
+
   _fuelTypeOptions(profile, selected) {
     const normalizedProfile = this._normalizeFuelProfile(profile);
     const byProfile = {
@@ -1545,6 +1669,10 @@ class CarManagerRomaniaPanel extends HTMLElement {
       diesel: [["diesel_standard", "Motorină standard"], ["diesel_premium", "Motorină premium"]],
       lpg: [["lpg", "GPL"], ["gasoline_standard", "Benzină standard"], ["gasoline_premium", "Benzină premium"]],
       electric: [["electric_charge", "Încărcare electrică"]],
+      hybrid_gasoline: [["gasoline_standard", "Benzină standard"], ["gasoline_premium", "Benzină premium"]],
+      hybrid_diesel: [["diesel_standard", "Motorină standard"], ["diesel_premium", "Motorină premium"]],
+      phev_gasoline: [["gasoline_standard", "Benzină standard"], ["gasoline_premium", "Benzină premium"], ["electric_charge", "Încărcare electrică"]],
+      phev_diesel: [["diesel_standard", "Motorină standard"], ["diesel_premium", "Motorină premium"], ["electric_charge", "Încărcare electrică"]],
     };
     const options = byProfile[normalizedProfile] || byProfile.diesel;
     const selectedValue = selected || options[0][0];
@@ -3485,7 +3613,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._settingsHeroTile("Backup", backupFilename, "fișier în /config", "mdi:backup-restore")}
           ${this._settingsHeroTile("Autovehicule", vehicles.length, "profiluri active în integrare", "mdi:car-multiple")}
           ${this._settingsHeroTile("Rovinietă", rovinietaProviderLabel, "portal cont online", "mdi:road-variant")}
-          ${this._settingsHeroTile("Versiune", "1.2.3", "panel nou Car Manager", "mdi:package-variant-closed-check")}
+          ${this._settingsHeroTile("Versiune", "1.2.5b1", "panel nou Car Manager", "mdi:package-variant-closed-check")}
         </section>
 
         <section class="cmr-settings-grid">
@@ -3680,7 +3808,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <div class="cmr-settings-steps">
               <div><strong>1</strong><span>Restart Home Assistant după copierea fișierelor.</span></div>
-              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.2.3</code>.</span></div>
+              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.2.5b1</code>.</span></div>
               <div><strong>3</strong><span>Hard refresh în browser sau golire cache aplicație mobilă.</span></div>
             </div>
           </article>
@@ -4729,13 +4857,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
   }
 
   _renderMaintenanceEditSections(vehicle) {
-    const groups = [
-      { key: "service", title: "Revizie generală", terms: ["revizie"], withKm: true },
-      { key: "gearbox_oil", title: "Ulei cutie viteze", terms: ["ulei", "cutie"], withKm: true },
-      { key: "timing_belt", title: "Distribuție", terms: ["distribu"], withKm: true },
-      { key: "brake_fluid", title: "Lichid frână", terms: ["lichid", "fr"], withKm: false },
-      { key: "coolant", title: "Lichid antigel", terms: ["antigel"], withKm: false },
-    ];
+    const groups = this._maintenanceEditGroupsForVehicle(vehicle);
 
     return groups.map((group) => {
       const kmFields = group.withKm ? `
@@ -4798,18 +4920,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
   }
 
   _renderConsumablesEditSection(vehicle) {
-    const fields = [
-      ["engine_oil_capacity", "Cantitate ulei motor", ["cantitate", "ulei", "motor"], []],
-      ["engine_oil", "Ulei motor", ["ulei", "motor"], ["cantitate", "cutie"]],
-      ["oil_filter", "Filtru ulei", ["filtru", "ulei"], []],
-      ["air_filter", "Filtru aer", ["filtru", "aer"], []],
-      ["fuel_filter", "Filtru combustibil", ["filtru", "combustibil"], []],
-      ["cabin_filter", "Filtru habitaclu / aer condiționat", ["filtru", "habitaclu"], []],
-      ["gearbox_oil", "Ulei cutie viteze", ["ulei", "cutie"], ["ultima", "interval", "cost"]],
-      ["brake_fluid", "Lichid frână", ["lichid", "frana"], ["ultima", "interval", "cost"]],
-      ["coolant", "Lichid antigel", ["lichid", "antigel"], ["ultima", "interval", "cost"]],
-      ["timing_kit", "Kit distribuție", ["kit", "distributie"], []],
-    ];
+    const fields = this._consumableEditFieldsForVehicle(vehicle);
     const content = fields.map(([key, label, terms, exclude]) => `
       <label><span>${this._escape(label)}</span><input type="text" name="consumables__${key}" autocomplete="off" value="${this._escape(this._vehicleEditText(vehicle, terms, exclude))}"></label>
     `).join("");
@@ -5062,7 +5173,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
     return `
       <form class="cmr-admin-service-form" data-form="service-record" data-vehicle="${this._escape(vehicleKey)}" data-vehicle-ref="${this._escape(vehicle.vehicle_id || vehicle.vin || vehicle.plate || vehicle.label)}">
         <div class="cmr-admin-form-grid">
-          <label><span>Tip intervenție</span><select name="record_type">${this._recordTypeOptions(draft.record_type || "service")}</select></label>
+          <label><span>Tip intervenție</span><select name="record_type">${this._recordTypeOptionsForVehicle(vehicle, draft.record_type || "service")}</select></label>
           <label><span>Data</span><input type="date" name="date" value="${this._escape(this._formatDateInputValue(draft.date || today))}"></label>
           <label><span>Kilometraj</span><input type="number" name="km" min="0" step="1" value="${this._escape(km)}"></label>
           <label><span>Cost</span><input type="number" name="cost" min="0" step="0.01" value="${this._escape(draft.cost || "0")}"></label>

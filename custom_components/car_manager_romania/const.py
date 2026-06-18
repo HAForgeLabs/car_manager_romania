@@ -5,11 +5,11 @@ from __future__ import annotations
 DOMAIN = "car_manager_romania"
 
 DEFAULT_NAME = "Car Manager România"
-VERSION = "1.2.3"
+VERSION = "1.2.5b2"
 
 PLATFORMS: list[str] = ["sensor", "number", "date", "text", "button"]
 
-ATTR_INTEGRATION_VERSION = "1.2.3b1"
+ATTR_INTEGRATION_VERSION = "1.2.5b2"
 
 SIGNAL_VEHICLES_UPDATED = f"{DOMAIN}_vehicles_updated"
 SIGNAL_LICENSE_UPDATED = f"{DOMAIN}_license_updated"
@@ -185,6 +185,10 @@ CONSUMABLE_GEARBOX_OIL = "gearbox_oil"
 CONSUMABLE_BRAKE_FLUID = "brake_fluid"
 CONSUMABLE_COOLANT = "coolant"
 CONSUMABLE_TIMING_KIT = "timing_kit"
+CONSUMABLE_EV_BATTERY_SOH = "ev_battery_soh"
+CONSUMABLE_EV_BATTERY_CAPACITY = "ev_battery_capacity_kwh"
+CONSUMABLE_EV_CHARGE_CYCLES = "ev_charge_cycles"
+CONSUMABLE_EV_ESTIMATED_RANGE = "ev_estimated_range"
 
 CONSUMABLE_TYPES: dict[str, str] = {
     CONSUMABLE_ENGINE_OIL: "Ulei motor",
@@ -197,6 +201,10 @@ CONSUMABLE_TYPES: dict[str, str] = {
     CONSUMABLE_BRAKE_FLUID: "Lichid frână",
     CONSUMABLE_COOLANT: "Lichid antigel",
     CONSUMABLE_TIMING_KIT: "Kit distribuție",
+    CONSUMABLE_EV_BATTERY_SOH: "SOH baterie tracțiune",
+    CONSUMABLE_EV_BATTERY_CAPACITY: "Capacitate baterie tracțiune (kWh)",
+    CONSUMABLE_EV_CHARGE_CYCLES: "Cicluri încărcare",
+    CONSUMABLE_EV_ESTIMATED_RANGE: "Autonomie estimată",
 }
 
 DEFAULT_CONSUMABLE_VALUES: dict[str, str] = {
@@ -210,6 +218,10 @@ DEFAULT_CONSUMABLE_VALUES: dict[str, str] = {
     CONSUMABLE_BRAKE_FLUID: "DOT 4",
     CONSUMABLE_COOLANT: "",
     CONSUMABLE_TIMING_KIT: "",
+    CONSUMABLE_EV_BATTERY_SOH: "",
+    CONSUMABLE_EV_BATTERY_CAPACITY: "",
+    CONSUMABLE_EV_CHARGE_CYCLES: "",
+    CONSUMABLE_EV_ESTIMATED_RANGE: "",
 }
 
 
@@ -441,6 +453,7 @@ LEGAL_SOURCE_RAR_AUTOPASS = "RAR AutoPass"
 
 LEGAL_STATUS_UNKNOWN = "neconfigurat"
 LEGAL_STATUS_VALID = "valid"
+LEGAL_STATUS_SCHEDULED = "programat"
 LEGAL_STATUS_SOON = "expiră în curând"
 LEGAL_STATUS_EXPIRED = "expirat"
 

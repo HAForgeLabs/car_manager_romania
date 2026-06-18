@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from . import CarManagerConfigEntry
 from .const import (
     CONF_LICENSE_PLATE,
+    CONF_FUEL_PROFILE,
     CONF_NAME,
     CONF_NOTIFICATIONS_ENABLED,
     CONF_NOTIFY_BATTERY,
@@ -40,6 +41,7 @@ from .const import (
     CONF_VEHICLE_FEATURE_OPTIONS,
     LEGAL_STATUS_EXPIRED,
     LEGAL_STATUS_SOON,
+    LEGAL_STATUS_SCHEDULED,
     LEGAL_STATUS_UNKNOWN,
     LEGAL_STATUS_VALID,
     LEGAL_TYPE_CASCO,
@@ -49,6 +51,8 @@ from .const import (
     MAINTENANCE_STATUS_SOON,
     MAINTENANCE_STATUS_UNKNOWN,
     MAINTENANCE_TYPES,
+    MAINTENANCE_TYPE_GEARBOX_OIL,
+    MAINTENANCE_TYPE_TIMING_BELT,
 )
 from .costs import expense_total, upcoming_expense_items
 from .equipment import equipment_issues_for_vehicle
@@ -324,6 +328,20 @@ async def _clear_notification(
     persistent_notification.async_dismiss(hass, notification_id)
 
 
+def _is_electric_vehicle(vehicle: dict[str, Any]) -> bool:
+    """Returnează True pentru autovehiculele configurate ca electrice."""
+
+    return str(vehicle.get(CONF_FUEL_PROFILE) or "").strip().lower() == "electric"
+
+
+def _maintenance_type_applies_to_vehicle(vehicle: dict[str, Any], maintenance_type: str) -> bool:
+    """Nu notificăm jaloane mecanice irelevante pentru electrice."""
+
+    if not _is_electric_vehicle(vehicle):
+        return True
+    return maintenance_type not in {MAINTENANCE_TYPE_GEARBOX_OIL, MAINTENANCE_TYPE_TIMING_BELT}
+
+
 def _build_vehicle_issue_summary(
     entry: CarManagerConfigEntry,
     vehicle: dict[str, Any],
@@ -335,6 +353,8 @@ def _build_vehicle_issue_summary(
 
     if _notify_maintenance_enabled(entry) and _vehicle_feature_enabled(entry, vehicle, CONF_FEATURE_MAINTENANCE):
         for maintenance_type, maintenance_label in MAINTENANCE_TYPES.items():
+            if not _maintenance_type_applies_to_vehicle(vehicle, maintenance_type):
+                continue
             status = maintenance_status(vehicle, maintenance_type)
             if status in (MAINTENANCE_STATUS_OK, MAINTENANCE_STATUS_UNKNOWN):
                 continue
@@ -372,7 +392,7 @@ def _build_vehicle_issue_summary(
                 continue
 
             current_legal_status = legal_status(vehicle, legal_type)
-            if current_legal_status in (LEGAL_STATUS_VALID, LEGAL_STATUS_UNKNOWN):
+            if current_legal_status in (LEGAL_STATUS_VALID, LEGAL_STATUS_SCHEDULED, LEGAL_STATUS_UNKNOWN):
                 continue
             if current_legal_status not in (LEGAL_STATUS_SOON, LEGAL_STATUS_EXPIRED):
                 continue

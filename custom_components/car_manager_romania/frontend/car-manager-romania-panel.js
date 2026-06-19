@@ -51,6 +51,10 @@ class CarManagerRomaniaPanel extends HTMLElement {
     this._backupBusy = null;
     this._backupFilename = "car_manager_romania_backup.json";
     this._backupMessage = "";
+    this._navigationBackEnabled = this._loadPreference("back_button_enabled") === "true";
+    this._navigationBackPath = this._loadPreference("back_button_path") || "/lovelace/default_view";
+    this._navigationBackLabel = this._loadPreference("back_button_label") || "Înapoi";
+    this._navigationMessage = "";
     this._rovinietaAccountBusy = false;
     this._rovinietaAccountMessage = "";
     this._rovinietaSavedUsername = "";
@@ -118,6 +122,78 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _removePreference(name) {
     try { window.localStorage?.removeItem(this._storageKey(name)); } catch (_err) {}
+  }
+
+  _navigationOptionsForForm() {
+    return {
+      back_button_enabled: Boolean(this._navigationBackEnabled),
+      back_button_path: this._navigationBackPath || "/lovelace/default_view",
+      back_button_label: this._navigationBackLabel || "Înapoi",
+    };
+  }
+
+  _normalizeDashboardPath(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (/^(javascript|data):/i.test(raw)) return "";
+    // Navigarea este limitată la rute interne Home Assistant.
+    if (/^https?:\/\//i.test(raw)) return "";
+    return raw.startsWith("/") ? raw : `/${raw}`;
+  }
+
+  _saveNavigationOptions(payload = {}) {
+    const enabled = Boolean(payload.back_button_enabled);
+    const path = this._normalizeDashboardPath(payload.back_button_path || "/lovelace/default_view") || "/lovelace/default_view";
+    const label = String(payload.back_button_label || "Înapoi").trim().slice(0, 24) || "Înapoi";
+
+    this._navigationBackEnabled = enabled;
+    this._navigationBackPath = path;
+    this._navigationBackLabel = label;
+    this._savePreference("back_button_enabled", enabled ? "true" : "false");
+    this._savePreference("back_button_path", path);
+    this._savePreference("back_button_label", label);
+    this._navigationMessage = enabled
+      ? `Butonul de navigare este activ și trimite către ${path}.`
+      : "Butonul de navigare este dezactivat.";
+    this._render(true);
+  }
+
+  _resetNavigationOptions() {
+    this._navigationBackEnabled = false;
+    this._navigationBackPath = "/lovelace/default_view";
+    this._navigationBackLabel = "Înapoi";
+    this._removePreference("back_button_enabled");
+    this._removePreference("back_button_path");
+    this._removePreference("back_button_label");
+    this._navigationMessage = "Setările butonului de navigare au fost resetate.";
+    this._render(true);
+  }
+
+  _navigateToDashboardTarget() {
+    const target = this._normalizeDashboardPath(this._navigationBackPath);
+    if (!target) {
+      window.history.back();
+      return;
+    }
+
+    try {
+      window.history.pushState(null, "", target);
+      window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+    } catch (_error) {
+      window.location.href = target;
+    }
+  }
+
+  _renderDashboardBackButton() {
+    if (!this._navigationBackEnabled) return "";
+    const label = this._navigationBackLabel || "Înapoi";
+    const path = this._normalizeDashboardPath(this._navigationBackPath) || "istoricul anterior";
+    return `
+      <button class="cmr-dashboard-back" type="button" data-action="dashboard-back" title="Navighează către ${this._escape(path)}">
+        <ha-icon icon="mdi:arrow-left"></ha-icon>
+        <span>${this._escape(label)}</span>
+      </button>
+    `;
   }
 
   _isVehicleEditFormActive() {
@@ -620,8 +696,9 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs" style="position:absolute;right:12px;top:12px;bottom:auto;z-index:4;">
               <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.5b2</small></span>
+              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.5b3</small></span>
             </a>
+            ${this._renderDashboardBackButton()}
           </div>
           <aside class="cmr-hero-side" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;width:100%;max-width:100%;margin-top:14px;">
             <div class="cmr-state ${stateLabel === "Critic" ? "bad" : stateLabel === "Atenție" ? "warn" : "ok"}" style="min-width:0;">
@@ -646,8 +723,9 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._renderHeroCar()}
           <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs">
             <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.5b2</small></span>
+            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.5b3</small></span>
           </a>
+          ${this._renderDashboardBackButton()}
         </div>
         <aside class="cmr-hero-side">
           <div class="cmr-state ${stateLabel === "Critic" ? "bad" : stateLabel === "Atenție" ? "warn" : "ok"}">
@@ -3584,6 +3662,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
     }
     const notificationValues = this._notificationOptionsForForm();
     const featureValues = this._featureOptionsForForm();
+    const navigationValues = this._navigationOptionsForForm();
     const enabledFeatureCount = this._featureOptionDefinitions().filter(([key]) => featureValues[key]).length;
     const backupFilename = this._backupFilename || "car_manager_romania_backup.json";
     const vehicles = this._buildVehicles();
@@ -3610,10 +3689,11 @@ class CarManagerRomaniaPanel extends HTMLElement {
         <section class="cmr-settings-hero">
           ${this._settingsHeroTile("Notificări", notificationValues.notifications_enabled ? "active" : "oprite", "categorii salvate în integrare", "mdi:bell-cog-outline")}
           ${this._settingsHeroTile("Funcționalități", `${enabledFeatureCount}/${this._featureOptionDefinitions().length}`, "module afișate", "mdi:tune-variant")}
+          ${this._settingsHeroTile("Navigare", navigationValues.back_button_enabled ? "activ" : "oprit", navigationValues.back_button_path || "fără target", "mdi:arrow-left-bold-box-outline")}
           ${this._settingsHeroTile("Backup", backupFilename, "fișier în /config", "mdi:backup-restore")}
           ${this._settingsHeroTile("Autovehicule", vehicles.length, "profiluri active în integrare", "mdi:car-multiple")}
           ${this._settingsHeroTile("Rovinietă", rovinietaProviderLabel, "portal cont online", "mdi:road-variant")}
-          ${this._settingsHeroTile("Versiune", "1.2.5b1", "panel nou Car Manager", "mdi:package-variant-closed-check")}
+          ${this._settingsHeroTile("Versiune", "1.2.5b3", "panel nou Car Manager", "mdi:package-variant-closed-check")}
         </section>
 
         <section class="cmr-settings-grid">
@@ -3670,6 +3750,39 @@ class CarManagerRomaniaPanel extends HTMLElement {
             ${this._featureMessage ? `<div class="cmr-settings-message">${this._escape(this._featureMessage)}</div>` : ""}
           </article>
 
+
+          <article class="cmr-settings-card cmr-settings-navigation">
+            <div class="cmr-settings-card-head">
+              <ha-icon icon="mdi:arrow-left-bold-box-outline"></ha-icon>
+              <div>
+                <span>Navigare dashboard</span>
+                <h3>Buton configurabil de întoarcere</h3>
+                <p>Util pentru kiosk mode, sidebar ascuns sau dashboard-uri dedicate pe tabletă.</p>
+              </div>
+            </div>
+            <form data-form="navigation-options" class="cmr-settings-form">
+              <div class="cmr-settings-checks">
+                <label>
+                  <input type="checkbox" name="back_button_enabled" ${navigationValues.back_button_enabled ? "checked" : ""}>
+                  <span><strong>Activează butonul în header</strong><small>Afișează un buton de navigare peste imaginea principală din dashboard.</small></span>
+                </label>
+              </div>
+              <label class="cmr-settings-field">
+                <span>Target Home Assistant</span>
+                <input type="text" name="back_button_path" value="${this._escape(navigationValues.back_button_path)}" placeholder="/lovelace/default_view">
+              </label>
+              <label class="cmr-settings-field">
+                <span>Text buton</span>
+                <input type="text" name="back_button_label" maxlength="24" value="${this._escape(navigationValues.back_button_label)}" placeholder="Înapoi">
+              </label>
+              <div class="cmr-settings-actions wrap">
+                <button type="submit">Salvează navigarea</button>
+                <button type="button" class="secondary" data-action="navigation-reset">Reset</button>
+              </div>
+            </form>
+            <p class="cmr-settings-note">Exemple de target: <code>/lovelace/default_view</code>, <code>/dashboard-home/0</code> sau <code>/dashboard-utilitati/0</code>. Setarea se păstrează local în browserul/dispozitivul folosit.</p>
+            ${this._navigationMessage ? `<div class="cmr-settings-message">${this._escape(this._navigationMessage)}</div>` : ""}
+          </article>
 
           <article class="cmr-settings-card cmr-settings-backup">
             <div class="cmr-settings-card-head">
@@ -3808,7 +3921,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <div class="cmr-settings-steps">
               <div><strong>1</strong><span>Restart Home Assistant după copierea fișierelor.</span></div>
-              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.2.5b1</code>.</span></div>
+              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.2.5b3</code>.</span></div>
               <div><strong>3</strong><span>Hard refresh în browser sau golire cache aplicație mobilă.</span></div>
             </div>
           </article>
@@ -5712,6 +5825,13 @@ Mașina va apărea din nou în dashboard, iar entitățile și notificările ei 
       button.addEventListener("click", () => this._scrollTabs(button.dataset.direction === "-1" ? -1 : 1));
     });
 
+    this.shadowRoot.querySelectorAll("[data-action='dashboard-back']").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        this._navigateToDashboardTarget();
+      });
+    });
+
     this._scrollActiveTabIntoView();
 
     this.shadowRoot.querySelectorAll("[data-action='vehicle-filter']").forEach((select) => {
@@ -6119,6 +6239,22 @@ Mașina va apărea din nou în dashboard, iar entitățile și notificările ei 
       button.addEventListener("click", () => this._saveNotificationOptions(this._defaultNotificationOptions()));
     });
 
+    this.shadowRoot.querySelectorAll("form[data-form='navigation-options']").forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const data = new FormData(form);
+        this._saveNavigationOptions({
+          back_button_enabled: data.get("back_button_enabled") === "on",
+          back_button_path: data.get("back_button_path"),
+          back_button_label: data.get("back_button_label"),
+        });
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("[data-action='navigation-reset']").forEach((button) => {
+      button.addEventListener("click", () => this._resetNavigationOptions());
+    });
+
 
     this.shadowRoot.querySelectorAll("form[data-form='feature-options']").forEach((form) => {
       form.addEventListener("submit", (event) => {
@@ -6199,7 +6335,7 @@ Mașina va apărea din nou în dashboard, iar entitățile și notificările ei 
       .cmr-panel{max-width:1760px;margin:0 auto;padding:30px 28px 86px}
       .cmr-hero{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:24px;margin-bottom:22px}
       .cmr-hero-main{position:relative;min-height:270px;border-radius:34px;padding:38px 34px;display:flex;gap:22px;align-items:flex-start;background:radial-gradient(circle at 85% 0%,rgba(255,255,255,.16) 0 120px,transparent 121px),radial-gradient(circle at 73% 100%,rgba(255,255,255,.15) 0 110px,transparent 111px),linear-gradient(135deg,#0b3b5f 0%,#0b6480 50%,#25bed0 100%);box-shadow:0 22px 55px rgba(8,52,79,.22);color:#fff;overflow:hidden}
-      .cmr-logo{width:96px;height:96px;border-radius:28px;background:rgba(255,255,255,.14);display:grid;place-items:center;flex:0 0 auto;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.cmr-logo img{width:72px;height:72px;object-fit:contain}.cmr-hero-copy{position:relative;z-index:3;max-width:840px;background:transparent;box-shadow:none;backdrop-filter:none}.cmr-hero-copy h1,.cmr-hero-copy p{text-shadow:0 3px 14px rgba(2,24,39,.42)}.cmr-hero h1{font-size:56px;line-height:.95;margin:8px 0 12px;font-weight:900;letter-spacing:-.05em}.cmr-hero p{font-size:16px;max-width:820px;margin:0;color:rgba(255,255,255,.86);font-weight:600}.cmr-haforge-badge{position:absolute;right:24px;bottom:22px;z-index:5;display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff;background:rgba(5,28,47,.32);border:1px solid rgba(255,255,255,.22);border-radius:18px;padding:9px 13px;backdrop-filter:blur(8px);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em}.cmr-haforge-badge img{width:30px;height:30px;border-radius:8px;object-fit:cover}.cmr-haforge-text{display:flex;flex-direction:column;align-items:flex-start;line-height:1.05}.cmr-haforge-text span{display:block}.cmr-haforge-text small{display:block;margin-top:3px;font-size:9px;font-weight:900;letter-spacing:.10em;color:rgba(234,255,255,.78);text-transform:uppercase}.cmr-build-badge{display:none}.cmr-hero-car{position:absolute;left:96px;right:auto;top:34px;width:min(88%,1060px);height:390px;z-index:1;pointer-events:none;opacity:.98;filter:drop-shadow(0 28px 36px rgba(4,28,46,.30));overflow:visible}.cmr-hero-car::after{content:"";position:absolute;left:10%;right:24%;bottom:52px;height:38px;border-radius:999px;background:radial-gradient(ellipse at center,rgba(0,213,255,.24),transparent 72%);filter:blur(10px)}.cmr-hero-car img{position:absolute;left:0;top:0;width:100%;height:auto;object-fit:contain;object-position:left top}
+      .cmr-logo{width:96px;height:96px;border-radius:28px;background:rgba(255,255,255,.14);display:grid;place-items:center;flex:0 0 auto;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.cmr-logo img{width:72px;height:72px;object-fit:contain}.cmr-hero-copy{position:relative;z-index:3;max-width:840px;background:transparent;box-shadow:none;backdrop-filter:none}.cmr-hero-copy h1,.cmr-hero-copy p{text-shadow:0 3px 14px rgba(2,24,39,.42)}.cmr-hero h1{font-size:56px;line-height:.95;margin:8px 0 12px;font-weight:900;letter-spacing:-.05em}.cmr-hero p{font-size:16px;max-width:820px;margin:0;color:rgba(255,255,255,.86);font-weight:600}.cmr-haforge-badge{position:absolute;right:24px;bottom:22px;z-index:5;display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff;background:rgba(5,28,47,.32);border:1px solid rgba(255,255,255,.22);border-radius:18px;padding:9px 13px;backdrop-filter:blur(8px);font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em}.cmr-haforge-badge img{width:30px;height:30px;border-radius:8px;object-fit:cover}.cmr-haforge-text{display:flex;flex-direction:column;align-items:flex-start;line-height:1.05}.cmr-haforge-text span{display:block}.cmr-haforge-text small{display:block;margin-top:3px;font-size:9px;font-weight:900;letter-spacing:.10em;color:rgba(234,255,255,.78);text-transform:uppercase}.cmr-dashboard-back{position:absolute;right:24px;top:22px;z-index:6;display:inline-flex;align-items:center;gap:8px;min-height:42px;border:1px solid rgba(255,255,255,.26);border-radius:16px;padding:0 14px;background:rgba(5,28,47,.38);color:#fff;font-weight:950;cursor:pointer;box-shadow:0 14px 28px rgba(4,28,46,.18);backdrop-filter:blur(9px)}.cmr-dashboard-back ha-icon{width:20px;height:20px}.cmr-dashboard-back:hover{background:rgba(5,28,47,.52)}.cmr-build-badge{display:none}.cmr-hero-car{position:absolute;left:96px;right:auto;top:34px;width:min(88%,1060px);height:390px;z-index:1;pointer-events:none;opacity:.98;filter:drop-shadow(0 28px 36px rgba(4,28,46,.30));overflow:visible}.cmr-hero-car::after{content:"";position:absolute;left:10%;right:24%;bottom:52px;height:38px;border-radius:999px;background:radial-gradient(ellipse at center,rgba(0,213,255,.24),transparent 72%);filter:blur(10px)}.cmr-hero-car img{position:absolute;left:0;top:0;width:100%;height:auto;object-fit:contain;object-position:left top}
       .cmr-hero-side{display:grid;grid-template-rows:1.25fr 1fr 1fr 1fr;gap:14px}.cmr-state,.cmr-side-card{background:rgba(255,255,255,.92);border:1px solid rgba(15,63,94,.08);border-radius:26px;padding:22px;box-shadow:0 18px 45px rgba(8,52,79,.10)}.cmr-state{border-top:5px solid #1fa6bf}.cmr-state.bad{border-top-color:#e64a2e}.cmr-state.warn{border-top-color:#f1a51d}.cmr-state.ok{border-top-color:#1fa971}.cmr-state span,.cmr-side-card span{display:block;color:#64768f;font-weight:800;font-size:13px}.cmr-state strong{display:block;font-size:38px;line-height:1;margin-top:16px}.cmr-side-card strong{display:block;font-size:28px;line-height:1;margin-bottom:5px}
       .cmr-tabs-shell{position:sticky;top:8px;z-index:5;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;align-items:center;margin-bottom:18px}.cmr-tabs{min-width:0;display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:6px;background:rgba(255,255,255,.92);backdrop-filter:blur(14px);border:1px solid rgba(15,63,94,.08);border-radius:26px;padding:10px;box-shadow:0 18px 45px rgba(8,52,79,.11);scroll-behavior:smooth}.cmr-tabs-arrow{display:none;border:0;border-radius:18px;background:rgba(255,255,255,.94);color:#0b5b82;width:44px;height:44px;align-items:center;justify-content:center;box-shadow:0 14px 28px rgba(8,52,79,.10);cursor:pointer}.cmr-tabs-arrow ha-icon{width:28px;height:28px}.cmr-tab{min-width:0;border:0;background:transparent;color:#4f5963;border-radius:18px;padding:11px 5px;display:flex;align-items:center;justify-content:center;gap:5px;font-size:13px;font-weight:850;cursor:pointer;white-space:nowrap;scroll-snap-align:center}.cmr-tab ha-icon{width:20px;height:20px;flex:0 0 auto}.cmr-tab span{overflow:hidden;text-overflow:ellipsis}.cmr-tab.active{background:linear-gradient(135deg,#0b5b82,#19acc0);color:#fff;box-shadow:0 14px 28px rgba(9,98,134,.25)}
       .cmr-filterbar{display:flex;align-items:center;justify-content:space-between;gap:18px;background:rgba(255,255,255,.94);border:1px solid rgba(15,63,94,.08);border-radius:24px;padding:16px 20px;margin-bottom:18px}.cmr-filterbar strong{display:block;font-size:17px}.cmr-filterbar span{display:block;color:#64768f;font-weight:700}.cmr-filterbar label{display:flex;align-items:center;gap:12px}.cmr-filterbar label span{font-size:13px;font-weight:900;color:#64768f}.cmr-filterbar select,.cmr-page select{height:44px;border:1px solid rgba(15,63,94,.13);background:#fff;border-radius:16px;padding:0 42px 0 16px;font-weight:850;color:#10233f;min-width:230px}
@@ -6338,8 +6474,13 @@ Mașina va apărea din nou în dashboard, iar entitățile și notificările ei 
         }
         .cmr-license-message.warn{background:rgba(241,165,29,.12);border-color:rgba(241,165,29,.28);color:#ffd88a}
         .cmr-settings-steps strong{background:#25bed0;color:#062033}
+        .cmr-dashboard-back{background:rgba(6,18,31,.56);border-color:rgba(149,205,224,.25);color:#f6fbff}
+        .cmr-dashboard-back:hover{background:rgba(6,18,31,.72)}
         .cmr-tooltip{background:#e8f4fb;color:#07111f}
       }
+
+      .cmr-panel.is-compact .cmr-dashboard-back{right:12px;top:auto;bottom:14px;min-height:40px;padding:0 12px;border-radius:15px;font-size:13px}
+      .cmr-panel.is-compact .cmr-dashboard-back ha-icon{width:19px;height:19px}
 
       @media (prefers-color-scheme: dark){
         :host{

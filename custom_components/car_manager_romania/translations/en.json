@@ -37,7 +37,8 @@
         "data": {
           "rovinieta_username": "Online vignette account username",
           "rovinieta_password": "Online vignette account password",
-          "rovinieta_scan_interval": "Rovinieta update interval, in seconds"
+          "rovinieta_scan_interval": "Rovinieta update interval, in seconds",
+          "rovinieta_provider": "Vignette provider"
         }
       },
       "notifications": {

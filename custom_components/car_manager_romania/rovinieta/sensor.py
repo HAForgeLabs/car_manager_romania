@@ -17,6 +17,8 @@ from .coordinator import CarManagerRovinietaCoordinator
 from ..license_access import async_license_allows_all_vehicles, locked_vehicle_attributes, vehicle_allowed_by_license
 from .helpers import slugify_plate
 from .models import VehicleData
+from .tollro_adapter import stable_vehicle_id
+from .coordinator import PROVIDER_TOLLRO
 
 
 def _iso(dt):
@@ -41,7 +43,11 @@ async def async_setup_rovinieta_sensors(
     """Configurează componentele integrației în Home Assistant."""
 
     coordinator = entry.runtime_data.rovinieta_coordinator
-    if coordinator is None or coordinator.data is None:
+    if coordinator is None:
+        return
+    # Pentru TollRo, senzorii pot exista și dacă primul apel API a eșuat.
+    # Ei devin disponibili după prima actualizare reușită, fără a recrea entități.
+    if coordinator.data is None and coordinator.provider != PROVIDER_TOLLRO:
         return
 
     entities: list[SensorEntity] = []
@@ -51,18 +57,22 @@ async def async_setup_rovinieta_sensors(
         if not license_plate:
             continue
 
-        rovinieta_vehicle = _find_rovinieta_vehicle(coordinator, license_plate)
+        rovinieta_vehicle = _find_rovinieta_vehicle(coordinator, license_plate, vehicle.get(CONF_VIN))
         if rovinieta_vehicle is None:
-            continue
+            if coordinator.provider != PROVIDER_TOLLRO:
+                continue
+            tollro_vehicle_id = stable_vehicle_id(license_plate)
+        else:
+            tollro_vehicle_id = rovinieta_vehicle.id
 
         entities.extend(
             [
-                CarRovinietaStatusSensor(entry, coordinator, vehicle, rovinieta_vehicle.id),
-                CarRovinietaExpirySensor(entry, coordinator, vehicle, rovinieta_vehicle.id),
-                CarRovinietaDaysRemainingSensor(entry, coordinator, vehicle, rovinieta_vehicle.id),
-                CarRovinietaSeriesSensor(entry, coordinator, vehicle, rovinieta_vehicle.id),
-                CarRovinietaCategorySensor(entry, coordinator, vehicle, rovinieta_vehicle.id),
-                CarRovinietaPeriodSensor(entry, coordinator, vehicle, rovinieta_vehicle.id),
+                CarRovinietaStatusSensor(entry, coordinator, vehicle, tollro_vehicle_id),
+                CarRovinietaExpirySensor(entry, coordinator, vehicle, tollro_vehicle_id),
+                CarRovinietaDaysRemainingSensor(entry, coordinator, vehicle, tollro_vehicle_id),
+                CarRovinietaSeriesSensor(entry, coordinator, vehicle, tollro_vehicle_id),
+                CarRovinietaCategorySensor(entry, coordinator, vehicle, tollro_vehicle_id),
+                CarRovinietaPeriodSensor(entry, coordinator, vehicle, tollro_vehicle_id),
             ]
         )
 
@@ -72,14 +82,23 @@ async def async_setup_rovinieta_sensors(
 def _find_rovinieta_vehicle(
     coordinator: CarManagerRovinietaCoordinator,
     license_plate: str,
+    vin: str | None = None,
 ) -> VehicleData | None:
-    """Funcție internă pentru căutare rovinietă vehicul."""
+    """Caută după număr și, pentru TollRo, verifică și VIN-ul disponibil."""
 
-    wanted = license_plate.replace(" ", "").upper()
+    wanted = license_plate.replace(" ", "").replace("-", "").upper()
+    wanted_vin = (vin or "").strip().upper()
+    if coordinator.data is None:
+        return None
     for vehicle in coordinator.data.vehicles:
-        candidate = vehicle.plate_no.replace(" ", "").upper()
-        if candidate == wanted:
-            return vehicle
+        candidate = vehicle.plate_no.replace(" ", "").replace("-", "").upper()
+        if candidate != wanted:
+            continue
+        if (vehicle.source or "").startswith("TollRo"):
+            online_vin = (vehicle.chasis_no or "").strip().upper()
+            if wanted_vin and online_vin and wanted_vin != online_vin:
+                continue
+        return vehicle
     return None
 
 
@@ -157,10 +176,15 @@ class CarRovinietaBaseSensor(SensorEntity):
 
         for vehicle in self.coordinator.data.vehicles:
             if vehicle.id == self._rovinieta_vehicle_id:
+                if (vehicle.source or "").startswith("TollRo"):
+                    local_vin = (self._car_vehicle.get(CONF_VIN) or "").strip().upper()
+                    online_vin = (vehicle.chasis_no or "").strip().upper()
+                    if local_vin and online_vin and local_vin != online_vin:
+                        continue
                 return vehicle
 
         license_plate = (self._car_vehicle.get(CONF_LICENSE_PLATE) or "").strip().upper()
-        return _find_rovinieta_vehicle(self.coordinator, license_plate)
+        return _find_rovinieta_vehicle(self.coordinator, license_plate, self._car_vehicle.get(CONF_VIN))
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -243,6 +267,8 @@ class CarRovinietaStatusSensor(CarRovinietaBaseSensor):
             return "activă"
         if vehicle.has_active_vignette and vehicle.days_remaining is not None and vehicle.days_remaining < 0:
             return "expirată"
+        if (vehicle.source or "").startswith("TollRo"):
+            return "neconfirmată în TollRo"
         return "fără rovinietă activă"
 
     @property

@@ -80,6 +80,17 @@ class CarManagerRomaniaPanel extends HTMLElement {
     this._vehicleDeleteBusy = null;
     this._vehicleLocalOverrides = {};
     this._lastCenteredTab = null;
+    this._lastScrollInputAt = 0;
+    this._deferredHassRender = null;
+    // Evenimentele se atașează elementului-gazdă, nu nodurilor recreate la randare.
+    // Actualizările HA nu vor înlocui DOM-ul în timp ce utilizatorul derulează.
+    this.addEventListener("wheel", () => this._markScrollInteraction(), { passive: true });
+    this.addEventListener("touchmove", () => this._markScrollInteraction(), { passive: true });
+    this.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"].includes(event.key)) {
+        this._markScrollInteraction();
+      }
+    });
   }
 
   set panel(panel) {
@@ -91,21 +102,95 @@ class CarManagerRomaniaPanel extends HTMLElement {
     this._hass = hass;
     const signature = this._buildSignature();
 
-    // Dacă utilizatorul completează formularul extins de editare autovehicul,
-    // nu randăm din nou panelul la fiecare refresh de stare Home Assistant.
-    // Altfel, valorile tastate dar nesalvate se pierd când se actualizează senzorii.
-    if (this._isVehicleEditFormActive()) {
+    // Nu reconstruim formularele cât timp se introduc date (inclusiv cont TollRo).
+    // Astfel evităm pierderea valorilor nesalvate și a focusului la refresh HA.
+    if (this._isVehicleEditFormActive() || this._isDataEntryActive()) {
       this._pendingSignatureWhileEditing = signature;
       return;
     }
 
     if (signature === this._lastSignature && this.shadowRoot?.querySelector(".cmr-panel")) return;
+    if (this.shadowRoot?.querySelector(".cmr-panel") && this._isScrollInteractionActive()) {
+      this._scheduleDeferredHassRefresh();
+      return;
+    }
     this._lastSignature = signature;
     this._render(false);
   }
 
   connectedCallback() {
     this._render(true);
+  }
+
+  disconnectedCallback() {
+    if (this._deferredHassRender !== null) {
+      clearTimeout(this._deferredHassRender);
+      this._deferredHassRender = null;
+    }
+  }
+
+  _markScrollInteraction() {
+    this._lastScrollInputAt = Date.now();
+    if (this._deferredHassRender !== null) this._scheduleDeferredHassRefresh();
+  }
+
+  _isScrollInteractionActive() {
+    return this._lastScrollInputAt > 0 && Date.now() - this._lastScrollInputAt < 900;
+  }
+
+  _scheduleDeferredHassRefresh() {
+    if (this._deferredHassRender !== null) clearTimeout(this._deferredHassRender);
+    const delay = Math.max(50, 950 - (Date.now() - this._lastScrollInputAt));
+    this._deferredHassRender = setTimeout(() => {
+      this._deferredHassRender = null;
+      if (!this.isConnected || !this._hass) return;
+      if (this._isScrollInteractionActive()) {
+        this._scheduleDeferredHassRefresh();
+        return;
+      }
+      if (this._isVehicleEditFormActive() || this._isDataEntryActive()) return;
+      const signature = this._buildSignature();
+      if (signature === this._lastSignature) return;
+      this._lastSignature = signature;
+      this._render(false);
+    }, delay);
+  }
+
+  _isDataEntryActive() {
+    const active = this.shadowRoot?.activeElement;
+    return Boolean(active?.matches?.("input, textarea, select, [contenteditable='true']"));
+  }
+
+  _captureScrollPositions() {
+    // În HA, containerul de scroll este adesea într-un Shadow DOM exterior,
+    // nu window; îl căutăm traversând explicit gazdele Shadow DOM.
+    const positions = [];
+    const seen = new Set();
+    let node = this;
+    while (node) {
+      if (node.nodeType === 1 && !seen.has(node)) {
+        seen.add(node);
+        if (node.scrollTop || node.scrollLeft) {
+          positions.push({ node, top: node.scrollTop, left: node.scrollLeft });
+        }
+      }
+      node = node.parentNode || node.host || null;
+    }
+    const docScroller = document.scrollingElement;
+    if (docScroller && !seen.has(docScroller) && (docScroller.scrollTop || docScroller.scrollLeft)) {
+      positions.push({ node: docScroller, top: docScroller.scrollTop, left: docScroller.scrollLeft });
+    }
+    return positions;
+  }
+
+  _restoreScrollPositions(positions) {
+    // Restaurare sincronă: nu programăm scrollTo în frame-uri viitoare,
+    // pentru că acele comenzi pot anula derularea începută între timp.
+    for (const { node, top, left } of positions) {
+      if (!node.isConnected) continue;
+      if (node.scrollTop !== top) node.scrollTop = top;
+      if (node.scrollLeft !== left) node.scrollLeft = left;
+    }
   }
 
   _storageKey(name) {
@@ -649,8 +734,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _render(force = false) {
     if (!this.shadowRoot) return;
-    const hadPanel = Boolean(this.shadowRoot?.querySelector(".cmr-panel"));
-    const previousScrollY = window.scrollY || document.documentElement?.scrollTop || 0;
+    const scrollPositions = this._captureScrollPositions();
     const vehicles = this._buildVehicles();
     const summary = this._fleetSummary();
     if (!vehicles.some((vehicle) => vehicle.vehicle_id === this._vehicleFilter)) this._vehicleFilter = "all";
@@ -669,13 +753,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
     `;
     this._tooltip = this.shadowRoot.querySelector(".cmr-tooltip");
     this._attachEvents();
-    if ((force || hadPanel) && previousScrollY > 0) {
-      // Păstrăm poziția în pagină după randări interne ca să evităm salturile pe mobil.
-      requestAnimationFrame(() => {
-        window.scrollTo({ top: previousScrollY, left: 0, behavior: "auto" });
-        requestAnimationFrame(() => window.scrollTo({ top: previousScrollY, left: 0, behavior: "auto" }));
-      });
-    }
+    this._restoreScrollPositions(scrollPositions);
   }
 
   _renderHero(summary) {
@@ -696,7 +774,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs" style="position:absolute;right:12px;top:12px;bottom:auto;z-index:4;">
               <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.5</small></span>
+              <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.9</small></span>
             </a>
             ${this._renderDashboardBackButton()}
           </div>
@@ -723,7 +801,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._renderHeroCar()}
           <a class="cmr-haforge-badge" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="HAForge Labs">
             <img src="/car_manager_romania_brand/haforge-logo.png" alt="HAForge Labs">
-            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.5</small></span>
+            <span class="cmr-haforge-text"><span>HAForge Labs</span><small>v1.2.9</small></span>
           </a>
           ${this._renderDashboardBackButton()}
         </div>
@@ -1002,6 +1080,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
     const icon = term.key === "rca" ? "mdi:shield-check" : term.key === "itp" ? "mdi:clipboard-check" : term.key === "casco" ? "mdi:shield-star" : "mdi:road-variant";
     const plate = term.vehicle.plate || term.vehicle.vin || term.vehicle.vehicle_id || "";
     const sourceBadge = ["itp", "rovinieta"].includes(term.key) ? this._renderLegalSourceLine(term.key, term.source || "manual") : "";
+    const verifiedLine = term.key === "itp" && term.checkedAt ? `<small>Verificat RAR: ${this._escape(term.checkedAt)}</small>` : "";
     const primaryLine = term.isScheduled
       ? `activ din ${this._escape(term.startText || "data setată")}`
       : (term.expiryText ? `expiră la ${this._escape(term.expiryText)}` : this._escape(term.status || "configurat"));
@@ -1020,6 +1099,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           <small>${plate ? `${this._escape(plate)} · ` : ""}${primaryLine}</small>
           ${expiryLine}
           ${sourceBadge}
+          ${verifiedLine}
         </div>
       </article>
     `;
@@ -1106,6 +1186,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
       expiryText: this._formatDate(foundExpiry),
       valueText,
       source,
+      checkedAt: key === "itp" ? this._formatDate(termAttrs.last_checked_at) : "",
       level,
       sort: isScheduled && daysUntilStart !== null ? daysUntilStart : (daysFromExpiry !== null ? daysFromExpiry : 99999),
     };
@@ -3309,7 +3390,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
       const response = await this._callCarManagerServiceWithResponse("get_rovinieta_account", {});
       if (response && typeof response === "object") {
         this._rovinietaSavedUsername = String(response.username || "").trim();
-        this._rovinietaSavedProvider = ["cnair", "e_rovinieta"].includes(String(response.provider || "")) ? String(response.provider) : "cnair";
+        this._rovinietaSavedProvider = ["cnair", "e_rovinieta", "tollro"].includes(String(response.provider || "")) ? String(response.provider) : "cnair";
         this._rovinietaSavedInterval = Number(response.scan_interval || this._rovinietaSavedInterval || 21600) || 21600;
         this._rovinietaHasSavedPassword = Boolean(response.has_password);
         this._rovinietaAccountLoaded = true;
@@ -3335,7 +3416,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
     const username = clear ? "" : String(formData.get("cmr_rovinieta_username") || formData.get("rovinieta_username") || "").trim();
     const password = clear ? "" : String(formData.get("cmr_rovinieta_password") || formData.get("rovinieta_password") || "");
     const providerValue = String(formData.get("cmr_rovinieta_provider") || formData.get("rovinieta_provider") || this._rovinietaSavedProvider || "cnair");
-    const provider = ["cnair", "e_rovinieta"].includes(providerValue) ? providerValue : "cnair";
+    const provider = ["cnair", "e_rovinieta", "tollro"].includes(providerValue) ? providerValue : "cnair";
     const interval = clear ? 21600 : Math.max(900, Number(formData.get("cmr_rovinieta_scan_interval") || formData.get("rovinieta_scan_interval") || 21600));
 
     this._rovinietaAccountBusy = true;
@@ -3423,7 +3504,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
     if (!this._hass || this._rovinietaRefreshBusy) return;
 
     this._rovinietaRefreshBusy = true;
-    const portalLabel = this._rovinietaSavedProvider === "e_rovinieta" ? "e-rovinieta.ro" : "CNAIR / erovinieta.ro";
+    const portalLabel = this._rovinietaSavedProvider === "tollro" ? "TollRo / portal.etoll.ro" : (this._rovinietaSavedProvider === "e_rovinieta" ? "e-rovinieta.ro" : "CNAIR / erovinieta.ro");
     this._rovinietaRefreshMessage = `Se actualizează rovinietele din ${portalLabel}...`;
     this._render(true);
 
@@ -3512,7 +3593,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
     if (!this._hass || this._rovinietaImportBusy) return;
 
     this._rovinietaImportBusy = true;
-    const portalLabel = this._rovinietaSavedProvider === "e_rovinieta" ? "e-rovinieta.ro" : "CNAIR / erovinieta.ro";
+    const portalLabel = this._rovinietaSavedProvider === "tollro" ? "TollRo / portal.etoll.ro" : (this._rovinietaSavedProvider === "e_rovinieta" ? "e-rovinieta.ro" : "CNAIR / erovinieta.ro");
     this._rovinietaImportMessage = `Se caută autovehicule în ${portalLabel}...`;
     this._render(true);
 
@@ -3631,6 +3712,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
   _rovinietaSourceLabel(source) {
     const value = this._normalize(source);
     if (!value) return "necunoscută";
+    if (value.includes("tollro") || value.includes("portal.etoll.ro")) return "TollRo / portal.etoll.ro";
     if (value.includes("cnair") || value.includes("erovinieta.ro") && !value.includes("e-rovinieta")) return "CNAIR / erovinieta.ro";
     if (value.includes("e-rovinieta")) return "e-rovinieta.ro";
     if (value.includes("manual")) return "manual";
@@ -3639,6 +3721,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _normalizeRovinietaSourceValue(source) {
     const value = this._normalize(source);
+    if (value.includes("tollro") || value.includes("portal.etoll.ro")) return "TollRo (portal.etoll.ro)";
     if (value.includes("cnair") || value.includes("erovinieta.ro") && !value.includes("e-rovinieta")) return "erovinieta.ro";
     if (value.includes("e-rovinieta")) return "e-rovinieta.ro";
     if (value.includes("manual")) return "manual";
@@ -3647,6 +3730,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
 
   _rovinietaSourceDescription(source) {
     const normalized = this._normalizeRovinietaSourceValue(source);
+    if (normalized === "TollRo (portal.etoll.ro)") return "Date preluate din contul TollRo / portal.etoll.ro.";
     if (normalized === "erovinieta.ro") return "Date preluate din portalul oficial CNAIR / erovinieta.ro.";
     if (normalized === "e-rovinieta.ro") return "Date preluate din contul e-rovinieta.ro.";
     return "Date introduse sau actualizate manual în Car Manager România.";
@@ -3668,15 +3752,15 @@ class CarManagerRomaniaPanel extends HTMLElement {
     const vehicles = this._buildVehicles();
     const rovinietaSource = this._rovinietaSourceSummary(vehicles);
     const rovinietaUsername = this._escape(this._rovinietaSavedUsername || "");
-    const rovinietaProvider = ["cnair", "e_rovinieta"].includes(this._rovinietaSavedProvider) ? this._rovinietaSavedProvider : "cnair";
-    const rovinietaProviderLabel = rovinietaProvider === "e_rovinieta" ? "e-rovinieta.ro" : "CNAIR / erovinieta.ro";
+    const rovinietaProvider = ["cnair", "e_rovinieta", "tollro"].includes(this._rovinietaSavedProvider) ? this._rovinietaSavedProvider : "cnair";
+    const rovinietaProviderLabel = rovinietaProvider === "tollro" ? "TollRo / portal.etoll.ro" : (rovinietaProvider === "e_rovinieta" ? "e-rovinieta.ro" : "CNAIR / erovinieta.ro");
     const rovinietaInterval = Number(this._rovinietaSavedInterval || 21600) || 21600;
     const rovinietaAccountConfigured = Boolean(this._rovinietaSavedUsername && this._rovinietaHasSavedPassword);
     const rovinietaAccountLabel = this._rovinietaSavedUsername
       ? `Conectat la ${this._escape(rovinietaProviderLabel)} ca ${this._escape(this._rovinietaSavedUsername)}`
       : "Niciun cont online salvat";
     const rovinietaAccountHelper = this._rovinietaSavedUsername
-      ? (this._rovinietaHasSavedPassword ? "Parola este salvată securizat în opțiunile integrării și nu este afișată." : "Utilizator salvat, dar parola nu este confirmată ca salvată.")
+      ? (this._rovinietaHasSavedPassword ? "Parola este salvată în configurarea locală Home Assistant și nu este afișată." : "Utilizator salvat, dar parola nu este confirmată ca salvată.")
       : "Salvează utilizatorul și parola pentru a putea căuta autovehicule în cont.";
     return `
       <main class="cmr-page cmr-settings-page">
@@ -3693,7 +3777,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
           ${this._settingsHeroTile("Backup", backupFilename, "fișier în /config", "mdi:backup-restore")}
           ${this._settingsHeroTile("Autovehicule", vehicles.length, "profiluri active în integrare", "mdi:car-multiple")}
           ${this._settingsHeroTile("Rovinietă", rovinietaProviderLabel, "portal cont online", "mdi:road-variant")}
-          ${this._settingsHeroTile("Versiune", "1.2.5", "panel nou Car Manager", "mdi:package-variant-closed-check")}
+          ${this._settingsHeroTile("Versiune", "1.2.9", "panel nou Car Manager", "mdi:package-variant-closed-check")}
         </section>
 
         <section class="cmr-settings-grid">
@@ -3814,7 +3898,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
               <ha-icon icon="mdi:road-variant"></ha-icon>
               <div>
                 <span>Rovinietă online</span>
-                <h3>Cont e-rovinieta / CNAIR</h3>
+                <h3>Cont rovinietă online</h3>
                 <p>Alege portalul pe care ai cont, apoi introdu utilizatorul și parola. Fallback-ul manual rămâne disponibil.</p>
               </div>
             </div>
@@ -3831,6 +3915,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
                 <select name="cmr_rovinieta_provider" ${this._rovinietaAccountBusy ? "disabled" : ""}>
                   <option value="cnair" ${rovinietaProvider === "cnair" ? "selected" : ""}>CNAIR / erovinieta.ro</option>
                   <option value="e_rovinieta" ${rovinietaProvider === "e_rovinieta" ? "selected" : ""}>e-rovinieta.ro</option>
+                  <option value="tollro" ${rovinietaProvider === "tollro" ? "selected" : ""}>TollRo / portal.etoll.ro</option>
                 </select>
               </label>
               <label class="cmr-settings-field">
@@ -3870,7 +3955,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
                 <div>
                   <span>Verificare ITP online</span>
                   <h4>Actualizează ITP din RAR AutoPass</h4>
-                  <p>Verifică online valabilitatea ITP pentru autovehiculele cu VIN completat și actualizează data de expirare găsită.</p>
+                  <p>Verifică automat ITP la fiecare 3 zile pentru autovehiculele cu VIN completat. Poți verifica și manual oricând.</p>
                 </div>
                 <button type="button" data-action="itp-refresh-now" ${this._itpRefreshBusy ? "disabled" : ""}>${this._itpRefreshBusy ? "Verific..." : "Verifică ITP"}</button>
               </div>
@@ -3921,7 +4006,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
             </div>
             <div class="cmr-settings-steps">
               <div><strong>1</strong><span>Restart Home Assistant după copierea fișierelor.</span></div>
-              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.2.5</code>.</span></div>
+              <div><strong>2</strong><span>Actualizează resursa Lovelace la <code>?v=1.2.9</code>.</span></div>
               <div><strong>3</strong><span>Hard refresh în browser sau golire cache aplicație mobilă.</span></div>
             </div>
           </article>
@@ -5016,7 +5101,7 @@ class CarManagerRomaniaPanel extends HTMLElement {
       : this._normalizeRovinietaSourceValue(this._rovinietaSourceFromVehicle(vehicle));
     const options = isItp
       ? [["manual", "manual"], ["RAR AutoPass", "RAR AutoPass"]]
-      : [["erovinieta.ro", "CNAIR / erovinieta.ro"], ["e-rovinieta.ro", "e-rovinieta.ro"], ["manual", "manual"]];
+      : [["erovinieta.ro", "CNAIR / erovinieta.ro"], ["e-rovinieta.ro", "e-rovinieta.ro"], ["TollRo (portal.etoll.ro)", "TollRo / portal.etoll.ro"], ["manual", "manual"]];
     const label = isItp ? "Sursă date ITP" : "Sursă date rovinietă";
     const hint = isItp
       ? "Arată de unde provine data afișată pentru ITP. Dacă modifici manual ITP-ul, poți seta sursa pe manual."

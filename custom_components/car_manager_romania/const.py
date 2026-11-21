@@ -5,11 +5,11 @@ from __future__ import annotations
 DOMAIN = "car_manager_romania"
 
 DEFAULT_NAME = "Car Manager România"
-VERSION = "1.2.5"
+VERSION = "1.2.9"
 
 PLATFORMS: list[str] = ["sensor", "number", "date", "text", "button"]
 
-ATTR_INTEGRATION_VERSION = "1.2.5"
+ATTR_INTEGRATION_VERSION = "1.2.9"
 
 SIGNAL_VEHICLES_UPDATED = f"{DOMAIN}_vehicles_updated"
 SIGNAL_LICENSE_UPDATED = f"{DOMAIN}_license_updated"
@@ -356,7 +356,8 @@ CONF_ROVINIETA_SCAN_INTERVAL = "rovinieta_scan_interval"
 CONF_ROVINIETA_PROVIDER = "rovinieta_provider"
 ROVINIETA_PROVIDER_CNAIR = "cnair"
 ROVINIETA_PROVIDER_E_ROVINIETA = "e_rovinieta"
-ROVINIETA_PROVIDERS = {ROVINIETA_PROVIDER_CNAIR, ROVINIETA_PROVIDER_E_ROVINIETA}
+ROVINIETA_PROVIDER_TOLLRO = "tollro"
+ROVINIETA_PROVIDERS = {ROVINIETA_PROVIDER_CNAIR, ROVINIETA_PROVIDER_E_ROVINIETA, ROVINIETA_PROVIDER_TOLLRO}
 CONF_ROVINIETA_CATEGORY = "rovinieta_category"
 CONF_FETESTI_BRIDGE_CATEGORY = "fetesti_bridge_category"
 
@@ -449,6 +450,7 @@ LEGAL_DATA_SOURCE = "source"
 LEGAL_SOURCE_MANUAL = "manual"
 LEGAL_SOURCE_EROVINIETA = "e-rovinieta.ro"
 LEGAL_SOURCE_CNAIR_EROVINIETA = "erovinieta.ro"
+LEGAL_SOURCE_TOLLRO = "TollRo (portal.etoll.ro)"
 LEGAL_SOURCE_RAR_AUTOPASS = "RAR AutoPass"
 
 LEGAL_STATUS_UNKNOWN = "neconfigurat"

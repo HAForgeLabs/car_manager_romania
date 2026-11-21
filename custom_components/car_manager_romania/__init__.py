@@ -70,6 +70,7 @@ from .const import (
     CONF_ROVINIETA_PROVIDER,
     ROVINIETA_PROVIDER_CNAIR,
     ROVINIETA_PROVIDER_E_ROVINIETA,
+    ROVINIETA_PROVIDER_TOLLRO,
     ROVINIETA_PROVIDERS,
     CONF_ROVINIETA_USERNAME,
     CONF_ROVINIETA_CATEGORY,
@@ -117,6 +118,7 @@ from .const import (
     LEGAL_END_DATE,
     LEGAL_OPTION_IGNORED,
     LEGAL_SOURCE_CNAIR_EROVINIETA,
+    LEGAL_SOURCE_TOLLRO,
     LEGAL_SOURCE_EROVINIETA,
     LEGAL_SOURCE_RAR_AUTOPASS,
     LEGAL_START_DATE,
@@ -151,8 +153,11 @@ from .legal import set_legal_ignored, set_legal_value
 from .rovinieta.api import ERovinietaApiClient
 from .rovinieta.cnair_api import CnairERovinietaApiClient
 from .rovinieta.coordinator import CarManagerRovinietaCoordinator
+from .rovinieta.tollro_account import TollRoAccountFetcher
+from .rovinieta.tollro_async_client import TollRoAuthError, TollRoError
 from .rovinieta.parser import merge_account_data, normalize_cnair_payload, normalize_payload
 from .itp_api import ItpAutopassClient
+from .itp_scheduler import ItpVerificationSchedule, ITP_SCHEDULE_POLL_INTERVAL
 from .storage import CarManagerFuelReceiptStore, CarManagerServiceHistoryStore, CarManagerVehicleStore, merge_vehicle_sources
 from .tire import CarManagerTireSetStore
 from .equipment import CarManagerEquipmentItemStore
@@ -174,7 +179,7 @@ from .battery_services import async_register_battery_services
 _LOGGER = logging.getLogger(__name__)
 
 LOVELACE_CARD_URL = "/car_manager_romania/car-manager-romania-card.js"
-PANEL_MODULE_URL = "/car_manager_romania/car-manager-romania-panel.js"
+PANEL_MODULE_URL = f"/car_manager_romania/car-manager-romania-panel.js?v={VERSION}"
 PANEL_URL_PATH = "car-manager-romania"
 LOVELACE_CARD_NOTIFICATION_ID = "car_manager_romania_lovelace_card"
 
@@ -193,6 +198,7 @@ class CarManagerRuntimeData:
     equipment_item_store: CarManagerEquipmentItemStore
     battery_store: CarManagerBatteryStore
     rovinieta_coordinator: CarManagerRovinietaCoordinator | None = None
+    itp_schedule: ItpVerificationSchedule | None = None
 
 
 type CarManagerConfigEntry = ConfigEntry[CarManagerRuntimeData]
@@ -902,13 +908,22 @@ def _rovinieta_vehicle_import_dict(rovinieta_vehicle: Any, existing_vehicles: li
         "rovinieta_days_remaining": getattr(rovinieta_vehicle, "days_remaining", None),
         "rovinieta_cost": price,
         "source": source,
-        "source_label": "CNAIR / erovinieta.ro" if "erovinieta.ro" in source and "e-rovinieta" not in source else "e-rovinieta.ro",
+        "source_label": ("TollRo / portal.etoll.ro" if source == LEGAL_SOURCE_TOLLRO else ("CNAIR / erovinieta.ro" if "erovinieta.ro" in source and "e-rovinieta" not in source else "e-rovinieta.ro")),
         "existing": existing is not None,
         "existing_vehicle_id": str(existing.get(CONF_VEHICLE_ID) or "") if existing else "",
         "existing_vehicle_name": str(existing.get(CONF_NAME) or "") if existing else "",
         "can_import": existing is None,
     }
 
+
+
+def _rovinieta_provider_label(provider: str) -> str:
+    """Etichetă unică pentru furnizorul selectat în UI și servicii."""
+    return {
+        ROVINIETA_PROVIDER_CNAIR: "CNAIR / erovinieta.ro",
+        ROVINIETA_PROVIDER_E_ROVINIETA: "e-rovinieta.ro",
+        ROVINIETA_PROVIDER_TOLLRO: "TollRo / portal.etoll.ro",
+    }.get(provider, "CNAIR / erovinieta.ro")
 
 
 def _rovinieta_account_store_key(entry: CarManagerConfigEntry) -> str:
@@ -1016,7 +1031,17 @@ async def _async_fetch_rovinieta_account_data_direct(
 
     session = async_get_clientsession(hass)
 
-    if provider == ROVINIETA_PROVIDER_E_ROVINIETA:
+    if provider == ROVINIETA_PROVIDER_TOLLRO:
+        fetcher = TollRoAccountFetcher(username, password)
+        try:
+            account_data = await fetcher.async_fetch_all()
+        except (TollRoAuthError, TollRoError) as err:
+            raise HomeAssistantError(
+                "Nu am putut citi vehiculele din TollRo. Verifică autentificarea și disponibilitatea portalului."
+            ) from err
+        finally:
+            await fetcher.async_close()
+    elif provider == ROVINIETA_PROVIDER_E_ROVINIETA:
         try:
             payload = await ERovinietaApiClient(session, username=username, password=password).async_fetch_all()
             account_data = normalize_payload(payload)
@@ -1031,7 +1056,7 @@ async def _async_fetch_rovinieta_account_data_direct(
             _LOGGER.debug("Scanarea importului CNAIR / erovinieta.ro a eșuat: %s", err)
             raise HomeAssistantError("Nu am putut citi autovehiculele din CNAIR / erovinieta.ro. Verifică portalul selectat, utilizatorul și parola.") from err
 
-    portal_label = "e-rovinieta.ro" if provider == ROVINIETA_PROVIDER_E_ROVINIETA else "CNAIR / erovinieta.ro"
+    portal_label = _rovinieta_provider_label(provider)
     _LOGGER.debug(
         "Scanare import rovinietă %s: %s vehicule primite",
         portal_label,
@@ -1044,6 +1069,13 @@ async def _async_fetch_rovinieta_account_data_direct(
     raise HomeAssistantError(f"Nu am găsit autovehicule disponibile în contul selectat: {portal_label}.")
 
 
+async def _async_close_tollro_coordinator(coordinator: CarManagerRovinietaCoordinator | None) -> None:
+    """Eliberează sesiunea proprie a TollRo fără a atinge sesiunea comună HA."""
+    client = getattr(coordinator, "tollro_client", None)
+    if client is not None:
+        await client.async_close()
+
+
 async def _async_reconfigure_rovinieta_coordinator(
     hass: HomeAssistant,
     entry: CarManagerConfigEntry,
@@ -1051,6 +1083,7 @@ async def _async_reconfigure_rovinieta_coordinator(
     """Reconstruiește coordonatorul rovinietei fără reload complet al integrării."""
 
     runtime_data = entry.runtime_data
+    old_coordinator = runtime_data.rovinieta_coordinator
     try:
         runtime_data.rovinieta_coordinator = await _async_setup_rovinieta_coordinator(hass, entry)
     except Exception as err:  # noqa: BLE001
@@ -1059,6 +1092,9 @@ async def _async_reconfigure_rovinieta_coordinator(
         # manuală va afișa utilizatorului eroarea concretă când este apăsată.
         runtime_data.rovinieta_coordinator = None
         _LOGGER.debug("Nu am putut recrea coordonatorul rovinietei după salvarea contului: %s", err)
+
+    if old_coordinator is not runtime_data.rovinieta_coordinator:
+        await _async_close_tollro_coordinator(old_coordinator)
 
     if runtime_data.rovinieta_coordinator is not None:
         try:
@@ -1077,7 +1113,7 @@ async def _async_refresh_rovinieta_now(
     username = str(options.get(CONF_ROVINIETA_USERNAME) or "").strip()
     password = str(options.get(CONF_ROVINIETA_PASSWORD) or "")
     provider = str(options.get(CONF_ROVINIETA_PROVIDER) or ROVINIETA_PROVIDER_CNAIR).strip()
-    portal_label = "e-rovinieta.ro" if provider == ROVINIETA_PROVIDER_E_ROVINIETA else "CNAIR / erovinieta.ro"
+    portal_label = _rovinieta_provider_label(provider)
 
     if not username or not password:
         raise HomeAssistantError("Contul de rovinietă online nu este configurat. Salvează utilizatorul și parola, apoi încearcă din nou.")
@@ -1087,8 +1123,11 @@ async def _async_refresh_rovinieta_now(
 
     coordinator = getattr(runtime_data, "rovinieta_coordinator", None)
     if coordinator is None or getattr(coordinator, "provider", None) != provider:
+        old_coordinator = coordinator
         coordinator = await _async_setup_rovinieta_coordinator(hass, entry)
         runtime_data.rovinieta_coordinator = coordinator
+        if old_coordinator is not coordinator:
+            await _async_close_tollro_coordinator(old_coordinator)
 
     if coordinator is not None:
         coordinator.async_set_updated_data(account_data)
@@ -1134,6 +1173,7 @@ async def _async_refresh_itp_now(
     skipped_count = 0
     results: list[dict[str, Any]] = []
     updated_vehicles: list[dict[str, Any]] = []
+    successful_checks: list[tuple[str, str]] = []
 
     for vehicle in vehicles:
         if not isinstance(vehicle, dict):
@@ -1178,7 +1218,9 @@ async def _async_refresh_itp_now(
         if result.ok and result.expires_at:
             set_legal_value(current, LEGAL_TYPE_ITP, LEGAL_END_DATE, result.expires_at)
             set_legal_value(current, LEGAL_TYPE_ITP, LEGAL_DATA_SOURCE, LEGAL_SOURCE_RAR_AUTOPASS)
+            set_legal_value(current, LEGAL_TYPE_ITP, "last_checked_at", datetime.now().astimezone().date().isoformat())
             updated_count += 1
+            successful_checks.append((current_vehicle_id, vin))
 
         updated_vehicles.append(current)
 
@@ -1192,6 +1234,9 @@ async def _async_refresh_itp_now(
         runtime_data.vehicles = active_vehicles
         runtime_data.all_vehicles = normalized_vehicles
         dispatcher_send(hass, SIGNAL_VEHICLES_UPDATED, active_vehicles)
+
+    if runtime_data.itp_schedule is not None:
+        await runtime_data.itp_schedule.async_record_successes(successful_checks)
 
     if checked_count == 0:
         message = "Nu am găsit autovehicule cu VIN completat pentru verificarea ITP."
@@ -1564,7 +1609,7 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             "username": username,
             "has_password": bool(password),
             "provider": provider,
-            "provider_label": "e-rovinieta.ro" if provider == ROVINIETA_PROVIDER_E_ROVINIETA else "CNAIR / erovinieta.ro",
+            "provider_label": _rovinieta_provider_label(provider),
             "scan_interval": scan_interval,
         }
 
@@ -1580,11 +1625,15 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         """Verifică ITP-ul online prin RAR AutoPass și actualizează datele găsite."""
 
         entry = _find_loaded_config_entry(hass, call.data.get("entry_id"))
-        return await _async_refresh_itp_now(
-            hass,
-            entry,
-            vehicle_id=call.data.get(CONF_VEHICLE_ID),
-        )
+        schedule = entry.runtime_data.itp_schedule
+        if schedule is None:
+            return await _async_refresh_itp_now(
+                hass, entry, vehicle_id=call.data.get(CONF_VEHICLE_ID)
+            )
+        async with schedule.lock:
+            return await _async_refresh_itp_now(
+                hass, entry, vehicle_id=call.data.get(CONF_VEHICLE_ID)
+            )
 
 
     async def async_scan_rovinieta_import_vehicles(call: ServiceCall) -> dict[str, Any]:
@@ -2546,6 +2595,8 @@ async def async_setup_entry(
         await vehicle_store.async_save_vehicles(normalized_vehicles)
 
     rovinieta_coordinator = await _async_setup_rovinieta_coordinator(hass, entry)
+    itp_schedule = ItpVerificationSchedule(hass, entry.entry_id)
+    await itp_schedule.async_load()
 
     entry.runtime_data = CarManagerRuntimeData(
         integration_version=VERSION,
@@ -2558,6 +2609,7 @@ async def async_setup_entry(
         equipment_item_store=equipment_item_store,
         battery_store=battery_store,
         rovinieta_coordinator=rovinieta_coordinator,
+        itp_schedule=itp_schedule,
     )
 
     def _register_unload_callback(callback: Any) -> None:
@@ -2622,6 +2674,39 @@ async def async_setup_entry(
             _schedule_notification_check
         )
         _register_unload_callback(remove_rovinieta_notification_listener)
+
+    async def _check_itp_due() -> None:
+        """Verifică ITP la 72 h de la ultima confirmare, fără blocarea pornirii."""
+        if not bool(entry.options.get(CONF_FEATURE_ITP_ONLINE, FEATURE_OPTION_DEFAULTS[CONF_FEATURE_ITP_ONLINE])):
+            return
+        if itp_schedule.lock.locked():
+            return
+        async with itp_schedule.lock:
+            async def _refresh_one(vehicle_id: str) -> None:
+                try:
+                    await _async_refresh_itp_now(hass, entry, vehicle_id=vehicle_id)
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning("Verificarea automată ITP nu a reușit: %s", type(err).__name__)
+
+            await itp_schedule.async_check_due(
+                entry.runtime_data.all_vehicles,
+                _refresh_one,
+            )
+
+    def _schedule_itp_check(*_: Any) -> None:
+        if not itp_schedule.lock.locked():
+            task = hass.async_create_task(_check_itp_due())
+            # Taskurile de verificare sunt anulate la unload, prin callback-urile HA.
+            pending_itp_tasks.add(task)
+            task.add_done_callback(pending_itp_tasks.discard)
+
+    pending_itp_tasks: set[asyncio.Task[Any]] = set()
+    _schedule_itp_check()
+    remove_itp_interval = async_track_time_interval(
+        hass, _schedule_itp_check, ITP_SCHEDULE_POLL_INTERVAL
+    )
+    _register_unload_callback(remove_itp_interval)
+    _register_unload_callback(lambda: [task.cancel() for task in pending_itp_tasks])
 
     license_revalidation_task = hass.async_create_task(
         _async_revalidate_license_non_blocking(hass, entry)
@@ -2727,6 +2812,15 @@ async def _async_sync_rovinieta_manual_terms(
         if rovinieta_vehicle is None:
             continue
 
+        # TollRo: nu atribuim unui autovehicul o rovinietă cu același număr
+        # de înmatriculare, dar cu VIN diferit. Nu schimbăm comportamentul
+        # deja existent al celorlalți furnizori.
+        if getattr(rovinieta_vehicle, "source", None) == LEGAL_SOURCE_TOLLRO:
+            local_vin = str(vehicle.get(CONF_VIN) or "").strip().upper()
+            online_vin = str(getattr(rovinieta_vehicle, "chasis_no", None) or "").strip().upper()
+            if local_vin and online_vin and local_vin != online_vin:
+                continue
+
         end_date = _rovinieta_date_value(getattr(rovinieta_vehicle, "expiry", None))
         if not end_date:
             continue
@@ -2748,6 +2842,7 @@ async def _async_sync_rovinieta_manual_terms(
             "",
             LEGAL_SOURCE_EROVINIETA,
             LEGAL_SOURCE_CNAIR_EROVINIETA,
+            LEGAL_SOURCE_TOLLRO,
         )
         if not may_update_from_auto:
             continue
@@ -2808,22 +2903,20 @@ async def _async_setup_rovinieta_coordinator(
 
     scan_interval_seconds = max(MIN_ROVINIETA_SCAN_INTERVAL, scan_interval_seconds)
 
-    session = async_get_clientsession(hass)
-    client = ERovinietaApiClient(
-        session,
-        username=username,
-        password=password,
-    )
+    client = None
     cnair_client = None
-    if provider == ROVINIETA_PROVIDER_CNAIR:
-        # Coordonatorul folosește doar portalul selectat de utilizator.
-        # Clientul e-rovinieta.ro este păstrat pentru semnătura coordonatorului,
-        # dar este ignorat în funcție de provider.
-        cnair_client = CnairERovinietaApiClient(
-            session,
-            username=username,
-            password=password,
-        )
+    tollro_client = None
+    if provider == ROVINIETA_PROVIDER_TOLLRO:
+        tollro_client = TollRoAccountFetcher(username, password)
+    else:
+        session = async_get_clientsession(hass)
+        if provider == ROVINIETA_PROVIDER_E_ROVINIETA:
+            client = ERovinietaApiClient(session, username=username, password=password)
+        elif provider == ROVINIETA_PROVIDER_CNAIR:
+            cnair_client = CnairERovinietaApiClient(
+                session, username=username, password=password
+            )
+
     coordinator = CarManagerRovinietaCoordinator(
         hass,
         client,
@@ -2831,6 +2924,7 @@ async def _async_setup_rovinieta_coordinator(
         cnair_client=cnair_client,
         config_entry=entry,
         provider=provider,
+        tollro_client=tollro_client,
     )
 
     try:
@@ -2864,6 +2958,20 @@ async def async_update_options(
     entry.runtime_data.vehicles = active_vehicles
     entry.runtime_data.all_vehicles = normalized_vehicles
 
+    # Configurarea din opțiunile HA trebuie să aibă același rezultat ca
+    # salvarea din dashboard; altfel store-ul vechi ar suprascrie providerul.
+    if CONF_ROVINIETA_USERNAME in entry.options:
+        await _async_save_rovinieta_account_store(
+            hass,
+            entry,
+            {
+                CONF_ROVINIETA_USERNAME: entry.options.get(CONF_ROVINIETA_USERNAME, ""),
+                CONF_ROVINIETA_PASSWORD: entry.options.get(CONF_ROVINIETA_PASSWORD, ""),
+                CONF_ROVINIETA_PROVIDER: entry.options.get(CONF_ROVINIETA_PROVIDER, ROVINIETA_PROVIDER_CNAIR),
+                CONF_ROVINIETA_SCAN_INTERVAL: entry.options.get(CONF_ROVINIETA_SCAN_INTERVAL, DEFAULT_ROVINIETA_SCAN_INTERVAL),
+            },
+        )
+
     await hass.config_entries.async_reload(entry.entry_id)
 
 
@@ -2873,4 +2981,9 @@ async def async_unload_entry(
 ) -> bool:
     """Descarcă integrarea din Home Assistant."""
 
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        await _async_close_tollro_coordinator(
+            getattr(getattr(entry, "runtime_data", None), "rovinieta_coordinator", None)
+        )
+    return unloaded

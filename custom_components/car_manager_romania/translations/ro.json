@@ -37,7 +37,8 @@
         "data": {
           "rovinieta_username": "Utilizator cont rovinietă online",
           "rovinieta_password": "Parolă cont rovinietă online",
-          "rovinieta_scan_interval": "Interval actualizare rovinietă, în secunde"
+          "rovinieta_scan_interval": "Interval actualizare rovinietă, în secunde",
+          "rovinieta_provider": "Portal rovinietă"
         }
       },
       "notifications": {

@@ -1,5 +1,5 @@
 class CarManagerRomaniaCard extends HTMLElement {
-  static get version() { return "v1.2.5"; }
+  static get version() { return "v1.2.9"; }
   setConfig(config) {
     this.config = config || {};
     this._editMode = this.config.edit_mode ?? false;
@@ -5198,7 +5198,7 @@ class CarManagerRomaniaCard extends HTMLElement {
       : summaries.filter((summary) => summary.key === this._fuelVehicleFilter);
     const payload = {
       type: "car_manager_romania_fuel_history",
-      version: "1.2.5",
+      version: "1.2.9",
       generated_at: new Date().toISOString(),
       filter: this._fuelVehicleFilter,
       vehicles: filtered.map((summary) => ({
@@ -5740,6 +5740,7 @@ class CarManagerRomaniaCard extends HTMLElement {
     const raw = String(source || "").trim();
     const value = this._normalize(raw);
     if (!value) return "";
+    if (value.includes("tollro") || value.includes("portal.etoll.ro")) return "TollRo / portal.etoll.ro";
     if (value.includes("cnair") || (value.includes("erovinieta.ro") && !value.includes("e-rovinieta"))) return "CNAIR / erovinieta.ro";
     if (value.includes("e-rovinieta")) return "e-rovinieta.ro";
     if (value.includes("manual")) return "manual";

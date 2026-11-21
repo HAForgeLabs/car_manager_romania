@@ -27,6 +27,10 @@ from .const import (
     CONF_LICENSE_PLATE,
     CONF_NAME,
     CONF_ROVINIETA_PASSWORD,
+    CONF_ROVINIETA_PROVIDER,
+    ROVINIETA_PROVIDER_CNAIR,
+    ROVINIETA_PROVIDER_E_ROVINIETA,
+    ROVINIETA_PROVIDER_TOLLRO,
     CONF_ROVINIETA_SCAN_INTERVAL,
     CONF_ROVINIETA_USERNAME,
     CONF_VEHICLES,
@@ -172,6 +176,9 @@ class CarManagerOptionsFlow(config_entries.OptionsFlow):
             )
 
             options[CONF_ROVINIETA_USERNAME] = username
+            options[CONF_ROVINIETA_PROVIDER] = user_input.get(
+                CONF_ROVINIETA_PROVIDER, options.get(CONF_ROVINIETA_PROVIDER, ROVINIETA_PROVIDER_CNAIR)
+            )
             if password:
                 options[CONF_ROVINIETA_PASSWORD] = password
             elif not username:
@@ -188,6 +195,14 @@ class CarManagerOptionsFlow(config_entries.OptionsFlow):
                         CONF_ROVINIETA_USERNAME,
                         default=options.get(CONF_ROVINIETA_USERNAME, ""),
                     ): str,
+                    vol.Optional(
+                        CONF_ROVINIETA_PROVIDER,
+                        default=options.get(CONF_ROVINIETA_PROVIDER, ROVINIETA_PROVIDER_CNAIR),
+                    ): vol.In({
+                        ROVINIETA_PROVIDER_CNAIR: "CNAIR / erovinieta.ro",
+                        ROVINIETA_PROVIDER_E_ROVINIETA: "e-rovinieta.ro",
+                        ROVINIETA_PROVIDER_TOLLRO: "TollRo / portal.etoll.ro",
+                    }),
                     vol.Optional(CONF_ROVINIETA_PASSWORD): str,
                     vol.Optional(
                         CONF_ROVINIETA_SCAN_INTERVAL,
